@@ -338,14 +338,24 @@ it on a real build.
 Not yet submitted to the Bitrise marketplace. Use the `git::` form above,
 which works today and needs no marketplace listing.
 
+Verified so far:
+
+- `stepman audit --step-yml ./step.yml` passes.
+- All four workflows in `bitrise.yml` behave correctly under the Bitrise CLI
+  runner, including `envman` output export into a following step, artifact
+  creation in `$BITRISE_DEPLOY_DIR`, the gate failing the build on a critical
+  finding, and the fail-fast on `deep` without a token.
+- 38 assertions pass against the real published CLI (`appflight@0.7.2`).
+
 Known gaps before a marketplace submission:
 
-- The step has not yet run on a hosted Bitrise build machine. Everything
-  below the npm install is verified; the install itself and `envman` output
-  export have only been exercised locally.
+- Not yet run on a **hosted** Bitrise build machine. The runner mechanism is
+  verified locally, so the remaining unknowns are stack-specific: whether the
+  stack ships Node 20.19+, and whether `npm install -g` succeeds without
+  elevated permissions there.
 - `deep: true` currently requires a comped account. Subscription-backed
-  entitlement is not live yet, so the paid tier will return HTTP 402 for
-  general users. The default `deep: false` path is unaffected.
+  entitlement is not live yet, so the paid tier returns HTTP 402 for general
+  users. The default `deep: false` path is unaffected.
 
 ## License
 

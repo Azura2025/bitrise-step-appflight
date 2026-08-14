@@ -1,0 +1,130 @@
+format_version: "13"
+default_step_lib_source: https://github.com/bitrise-io/bitrise-steplib.git
+
+# Self-test workflows for this step, run on a real Bitrise machine.
+#
+# This is the gate before a marketplace submission: the local suite covers
+# everything below the npm install, but only a hosted build proves the
+# install itself, PATH resolution after `npm i -g`, envman output export,
+# and $BITRISE_DEPLOY_DIR artifact pickup.
+#
+# Run locally with the Bitrise CLI:   bitrise run test
+# Or point a Bitrise app at this repo and run the `test` workflow.
+
+app:
+  envs:
+    - APPFLIGHT_VERSION: 0.7.2
+    # Free deterministic scanning needs no account. Leave telemetry off so a
+    # CI self-test never emits usage events.
+    - APPFLIGHT_TELEMETRY: "0"
+
+workflows:
+  # Expected: PASSES. Clean fixture, nothing at or above the threshold.
+  test-clean:
+    steps:
+      - path::./:
+          title: Appflight — clean fixture (expect pass)
+          inputs:
+            - project_path: ./test/fixtures/clean-app
+            - appflight_version: $APPFLIGHT_VERSION
+            - fail_on: critical
+            - deep: "false"
+      - script:
+          title: Assert outputs were exported
+          inputs:
+            - content: |-
+                #!/usr/bin/env bash
+                set -euo pipefail
+                echo "APPFLIGHT_FINDING_COUNT = ${APPFLIGHT_FINDING_COUNT:-<unset>}"
+                echo "APPFLIGHT_REPORT_PATH   = ${APPFLIGHT_REPORT_PATH:-<unset>}"
+                [ "${APPFLIGHT_FINDING_COUNT:-}" = "0" ] || { echo "expected 0 findings"; exit 1; }
+                [ -s "${APPFLIGHT_REPORT_PATH:-/nonexistent}" ] || { echo "no report artifact"; exit 1; }
+                echo "OK — outputs exported and artifact written"
+
+  # Expected: FAILS with exit 1. This workflow failing is the CORRECT result;
+  # the report-only variant below is what proves the artifact still lands.
+  test-gate-fires:
+    steps:
+      - script:
+          title: Write the fixture credential at runtime
+          inputs:
+            - content: |-
+                #!/usr/bin/env bash
+                set -euo pipefail
+                # Assembled here so no secret-shaped literal is ever committed.
+                prefix="sk_live"
+                body="A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6"
+                mkdir -p ./test/fixtures/critical-app/Sources
+                cat > ./test/fixtures/critical-app/Sources/Configuration.swift <<SWIFT
+                import Foundation
+
+                enum Configuration {
+                    static let paymentSecret = "${prefix}_${body}"
+                    static let apiBaseURL = URL(string: "https://api.example.com")!
+                }
+                SWIFT
+      - path::./:
+          title: Appflight — critical fixture (expect build failure)
+          inputs:
+            - project_path: ./test/fixtures/critical-app
+            - appflight_version: $APPFLIGHT_VERSION
+            - fail_on: critical
+            - deep: "false"
+
+  # Expected: PASSES. Same critical fixture, report-only, so the build stays
+  # green while the artifact still records the finding.
+  test-report-only:
+    steps:
+      - script:
+          title: Write the fixture credential at runtime
+          inputs:
+            - content: |-
+                #!/usr/bin/env bash
+                set -euo pipefail
+                prefix="sk_live"
+                body="A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6"
+                mkdir -p ./test/fixtures/critical-app/Sources
+                cat > ./test/fixtures/critical-app/Sources/Configuration.swift <<SWIFT
+                import Foundation
+
+                enum Configuration {
+                    static let paymentSecret = "${prefix}_${body}"
+                    static let apiBaseURL = URL(string: "https://api.example.com")!
+                }
+                SWIFT
+      - path::./:
+          title: Appflight — critical fixture, report-only
+          inputs:
+            - project_path: ./test/fixtures/critical-app
+            - appflight_version: $APPFLIGHT_VERSION
+            - fail_on: none
+            - deep: "false"
+      - script:
+          title: Assert the finding was recorded without failing the build
+          inputs:
+            - content: |-
+                #!/usr/bin/env bash
+                set -euo pipefail
+                echo "APPFLIGHT_FINDING_COUNT = ${APPFLIGHT_FINDING_COUNT:-<unset>}"
+                [ "${APPFLIGHT_FINDING_COUNT:-0}" -ge 1 ] || { echo "expected >=1 finding"; exit 1; }
+                grep -q '"critical": 1' "${APPFLIGHT_REPORT_PATH}" \
+                  || { echo "critical finding missing from artifact"; exit 1; }
+                echo "OK — finding recorded, build stayed green"
+
+  # Expected: FAILS fast, before any npm install.
+  test-misconfigured:
+    steps:
+      - path::./:
+          title: deep without a token (expect immediate failure)
+          inputs:
+            - project_path: ./test/fixtures/clean-app
+            - appflight_version: $APPFLIGHT_VERSION
+            - fail_on: critical
+            - deep: "true"
+            - api_token: ""
+
+  # The suite a reviewer should run first.
+  test:
+    after_run:
+      - test-clean
+      - test-report-only
