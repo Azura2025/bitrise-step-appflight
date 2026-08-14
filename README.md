@@ -69,7 +69,7 @@ appflight check . --deep --dry-run
 
 That prints the full payload and exits without making a network request.
 The CLI's own disclosure document is
-[`what-leaves-your-machine.md`](https://unpkg.com/appflight@0.7.2/docs/what-leaves-your-machine.md),
+[`what-leaves-your-machine.md`](https://unpkg.com/appflight@0.8.0/docs/what-leaves-your-machine.md),
 which ships inside the npm package itself, so the version you install is the
 version the disclosure describes.
 
@@ -84,7 +84,7 @@ is useful on its own.
 | Input | Default | Required | Description |
 |---|---|---|---|
 | `project_path` | `.` | yes | Directory to scan. Must be a **single app root**. |
-| `appflight_version` | `0.7.2` | yes | Exact npm version. `latest` is rejected. |
+| `appflight_version` | `0.8.0` | yes | Exact npm version. `latest` is rejected. |
 | `fail_on` | `critical` | yes | `critical` \| `warning` \| `suggestion` \| `none` |
 | `deep` | `false` | yes | `true` enables paid AI analysis and transmits excerpts. |
 | `api_token` | *(empty)* | no | Token for `--deep`. Sensitive; use a Bitrise secret. |
@@ -140,6 +140,23 @@ appflight login --print-token
 Store it as a Bitrise **secret** environment variable (Workflow Editor →
 Secrets), then reference the secret from the step input. Never commit it.
 
+#### Monthly AI quota
+
+The `--deep` tier carries a monthly allowance per account (Solo and Team plans
+have different limits). Two behaviours matter for a scheduled pipeline:
+
+- **At 80% consumption**, the CLI prints a usage line to the build log
+  (`monthly AI quota is 124/150 (26 remaining)`), so an approaching limit is
+  visible before it bites.
+- **When the allowance is exhausted**, the AI call is skipped and the run
+  **continues with deterministic results only**. It does not error. Your build
+  still gets its gate, its exit code, and its JSON artifact — just without the
+  AI section. The log says so explicitly.
+
+This means a nightly job cannot go red purely because the month's AI allowance
+ran out, and a quota-exhausted build is never mistaken for a clean one. The
+deterministic ruleset is unlimited and unaffected.
+
 ---
 
 ## Outputs
@@ -181,7 +198,7 @@ workflows:
           title: Appflight compliance check
           inputs:
             - project_path: "."
-            - appflight_version: "0.7.2"
+            - appflight_version: "0.8.0"
             - fail_on: "critical"
             - deep: "false"
       - deploy-to-bitrise-io@2: {}
@@ -208,14 +225,14 @@ workflows:
           title: Compliance — App One
           inputs:
             - project_path: "./AppOne"
-            - appflight_version: "0.7.2"
+            - appflight_version: "0.8.0"
             - fail_on: "critical"
       - git::https://github.com/Azura2025/bitrise-step-appflight.git@main:
           title: Compliance — App Two
           is_always_run: true
           inputs:
             - project_path: "./AppTwo"
-            - appflight_version: "0.7.2"
+            - appflight_version: "0.8.0"
             - fail_on: "critical"
       - deploy-to-bitrise-io@2: {}
 ```
@@ -231,7 +248,7 @@ Trigger it from Bitrise's scheduled builds (for example 02:00 daily).
       - git::https://github.com/Azura2025/bitrise-step-appflight.git@main:
           inputs:
             - project_path: "."
-            - appflight_version: "0.7.2"
+            - appflight_version: "0.8.0"
             - fail_on: "warning"
             - deep: "true"
             - api_token: "$APPFLIGHT_API_TOKEN"   # a Bitrise secret
@@ -245,7 +262,7 @@ Not yet published. Once accepted, the same configuration becomes:
       - appflight-compliance-check@1:
           inputs:
             - project_path: "."
-            - appflight_version: "0.7.2"
+            - appflight_version: "0.8.0"
             - fail_on: "critical"
 ```
 
@@ -266,14 +283,14 @@ Not yet published. Once accepted, the same configuration becomes:
 ## Report artifact
 
 `appflight-report.json` follows the CLI's versioned output contract
-(currently schema `1.2`). The contract is a public API: within a schema
+(currently schema `1.3`). The contract is a public API: within a schema
 version, fields are only added, never renamed, removed, or retyped, so a
 parser written against the shape below keeps working. Shape:
 
 ```json
 {
-  "schemaVersion": "1.2",
-  "tool": { "name": "appflight", "version": "0.7.2" },
+  "schemaVersion": "1.3",
+  "tool": { "name": "appflight", "version": "0.8.0" },
   "root": "/path/to/app",
   "scannedAt": "2026-08-11T02:00:00.000Z",
   "rulesetVersion": "d67d67f584fde857",
@@ -345,17 +362,14 @@ Verified so far:
   runner, including `envman` output export into a following step, artifact
   creation in `$BITRISE_DEPLOY_DIR`, the gate failing the build on a critical
   finding, and the fail-fast on `deep` without a token.
-- 38 assertions pass against the real published CLI (`appflight@0.7.2`).
+- 38 assertions pass against the real published CLI (`appflight@0.8.0`).
 
-Known gaps before a marketplace submission:
+Known gap before a marketplace submission:
 
 - Not yet run on a **hosted** Bitrise build machine. The runner mechanism is
   verified locally, so the remaining unknowns are stack-specific: whether the
   stack ships Node 20.19+, and whether `npm install -g` succeeds without
   elevated permissions there.
-- `deep: true` currently requires a comped account. Subscription-backed
-  entitlement is not live yet, so the paid tier returns HTTP 402 for general
-  users. The default `deep: false` path is unaffected.
 
 ## License
 

@@ -72,7 +72,7 @@ inputs:
         add one step instance per app instead.
       is_required: true
 
-  - appflight_version: "0.7.2"
+  - appflight_version: "0.8.0"
     opts:
       title: "Appflight CLI version"
       summary: "Exact npm version of the appflight CLI to install."
