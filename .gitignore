@@ -1,0 +1,9 @@
+# appflight local cache, written into any scanned directory
+.appflight/
+
+# Test artifacts
+test/tmp/
+*.log
+
+# OS
+.DS_Store
