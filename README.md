@@ -190,8 +190,12 @@ workflows:
 Pin to a tag instead of `main` once you have reviewed a release:
 
 ```yaml
-      - git::https://github.com/Azura2025/bitrise-step-appflight.git@v1.0.0:
+      - git::https://github.com/Azura2025/bitrise-step-appflight.git@v0.1.0:
 ```
+
+> **Version note.** This is `v0.1.0`, not `v1.0.0`, deliberately. The step's
+> test suite passes against the real published CLI, but it has not yet run on
+> a hosted Bitrise build machine. It stays pre-1.0 until it has.
 
 ### Scheduled nightly build across several apps
 
@@ -331,7 +335,17 @@ it on a real build.
 
 ## Status
 
-Not yet submitted to the Bitrise marketplace. Use the `git::` form above.
+Not yet submitted to the Bitrise marketplace. Use the `git::` form above,
+which works today and needs no marketplace listing.
+
+Known gaps before a marketplace submission:
+
+- The step has not yet run on a hosted Bitrise build machine. Everything
+  below the npm install is verified; the install itself and `envman` output
+  export have only been exercised locally.
+- `deep: true` currently requires a comped account. Subscription-backed
+  entitlement is not live yet, so the paid tier will return HTTP 402 for
+  general users. The default `deep: false` path is unaffected.
 
 ## License
 
