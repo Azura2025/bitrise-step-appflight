@@ -13,7 +13,7 @@ default_step_lib_source: https://github.com/bitrise-io/bitrise-steplib.git
 
 app:
   envs:
-    - APPFLIGHT_VERSION: 0.8.0
+    - APPFLIGHT_VERSION: 0.8.1
     # Free deterministic scanning needs no account. Leave telemetry off so a
     # CI self-test never emits usage events.
     - APPFLIGHT_TELEMETRY: "0"

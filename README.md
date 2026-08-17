@@ -32,7 +32,7 @@ second pass is the authoritative one, because it is the pass that includes
 ## What runs where, and what leaves the machine
 
 This section inlines the data-boundary contract for the pinned
-`appflight@0.8.0` package. A reviewer does not need access to another repository
+`appflight@0.8.1` package. A reviewer does not need access to another repository
 or package URL to understand the step.
 
 ### Software installed on the build machine
@@ -189,7 +189,7 @@ on its own.
 | Input | Default | Required | Description |
 |---|---|---|---|
 | `project_path` | `.` | yes | Directory to scan. Must be a **single app root**. |
-| `appflight_version` | `0.8.0` | yes | Exact npm version. `latest` is rejected. |
+| `appflight_version` | `0.8.1` | yes | Exact npm version. `latest` is rejected. |
 | `fail_on` | `critical` | yes | `critical` \| `warning` \| `suggestion` \| `none` |
 | `deep` | `false` | yes | `true` enables paid AI analysis and transmits excerpts. |
 | `api_token` | *(empty)* | no | Token for `--deep`. Sensitive; use a Bitrise secret. |
@@ -320,7 +320,7 @@ workflows:
           title: Appflight compliance check
           inputs:
             - project_path: "."
-            - appflight_version: "0.8.0"
+            - appflight_version: "0.8.1"
             - fail_on: "critical"
             - deep: "false"
       - deploy-to-bitrise-io@2: {}
@@ -329,10 +329,10 @@ workflows:
 Pin to a tag instead of `main` once you have reviewed a release:
 
 ```yaml
-      - git::https://github.com/Azura2025/bitrise-step-appflight.git@v0.2.0:
+      - git::https://github.com/Azura2025/bitrise-step-appflight.git@v0.2.3:
 ```
 
-`v0.2.0` is the current tagged release and pins `appflight@0.8.0`. The step and
+`v0.2.3` is the current tagged release and pins `appflight@0.8.1`. The step and
 its output/artifact handoff have been exercised successfully on hosted Bitrise
 hardware.
 
@@ -347,14 +347,14 @@ workflows:
           title: Compliance — App One
           inputs:
             - project_path: "./AppOne"
-            - appflight_version: "0.8.0"
+            - appflight_version: "0.8.1"
             - fail_on: "critical"
       - git::https://github.com/Azura2025/bitrise-step-appflight.git@main:
           title: Compliance — App Two
           is_always_run: true
           inputs:
             - project_path: "./AppTwo"
-            - appflight_version: "0.8.0"
+            - appflight_version: "0.8.1"
             - fail_on: "critical"
       - deploy-to-bitrise-io@2: {}
 ```
@@ -370,7 +370,7 @@ Trigger it from Bitrise's scheduled builds (for example 02:00 daily).
       - git::https://github.com/Azura2025/bitrise-step-appflight.git@main:
           inputs:
             - project_path: "."
-            - appflight_version: "0.8.0"
+            - appflight_version: "0.8.1"
             - fail_on: "warning"
             - deep: "true"
             - api_token: "$APPFLIGHT_API_TOKEN"   # a Bitrise secret
@@ -384,7 +384,7 @@ Not yet published. Once accepted, the same configuration becomes:
       - appflight-compliance-check@1:
           inputs:
             - project_path: "."
-            - appflight_version: "0.8.0"
+            - appflight_version: "0.8.1"
             - fail_on: "critical"
 ```
 
@@ -405,7 +405,7 @@ Not yet published. Once accepted, the same configuration becomes:
 ## Report artifact and output contract
 
 This section inlines the complete contract relevant to the pinned
-`appflight@0.8.0` release. `appflight-report.json` uses contract version `1.3`.
+`appflight@0.8.1` release. `appflight-report.json` uses contract version `1.3`.
 CI pipelines can rely on the exit codes and JSON semantics below; parsers must
 tolerate unknown additive fields.
 
@@ -431,7 +431,7 @@ representative shape is:
 ```json
 {
   "schemaVersion": "1.3",
-  "tool": { "name": "appflight", "version": "0.8.0" },
+  "tool": { "name": "appflight", "version": "0.8.1" },
   "command": "check",
   "root": "/path/to/app",
   "scannedAt": "2026-08-11T02:00:00.000Z",
@@ -511,7 +511,7 @@ Field semantics:
 FAST=1 ./test/run-tests.sh   # reuse the appflight already on PATH
 ```
 
-38 assertions across 7 cases: clean project passes, a hardcoded-secret project
+47 assertions across 9 cases: clean project passes, a hardcoded-secret project
 fails with exit 1, `fail_on: none` is report-only, `deep` without a token fails
 fast, invalid configuration is rejected before install, a CLI exit `2` is
 surfaced as a distinct tool error, and a missing `BITRISE_DEPLOY_DIR` degrades
@@ -537,7 +537,7 @@ Verified so far:
   runner, including `envman` output export into a following step, artifact
   creation in `$BITRISE_DEPLOY_DIR`, the gate failing the build on a critical
   finding, and the fail-fast on `deep` without a token.
-- 38 assertions pass against the real published CLI (`appflight@0.8.0`).
+- 47 assertions pass against the real published CLI (`appflight@0.8.1`).
 - The self-test workflow passes on hosted Bitrise hardware, including the
   pinned global npm install, PATH resolution, `envman` output export, and
   `$BITRISE_DEPLOY_DIR` artifact handoff.

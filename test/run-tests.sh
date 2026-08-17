@@ -15,7 +15,7 @@ set -uo pipefail
 readonly TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly REPO_DIR="$(cd "${TEST_DIR}/.." && pwd)"
 readonly STEP="${REPO_DIR}/step.sh"
-readonly PINNED_VERSION="0.8.0"
+readonly PINNED_VERSION="0.8.1"
 
 pass_count=0
 fail_count=0
@@ -261,7 +261,7 @@ mkdir -p "$stub_dir"
 cat >"${stub_dir}/appflight" <<'STUB'
 #!/usr/bin/env bash
 # Stands in for a CLI that cannot complete the scan.
-if [ "$1" = "version" ]; then echo "0.8.0"; exit 0; fi
+if [ "$1" = "version" ]; then echo "0.8.1"; exit 0; fi
 echo "appflight check: scan failed: simulated tool error" >&2
 exit 2
 STUB
@@ -291,7 +291,7 @@ stub_dir="${ws}/stub"
 mkdir -p "$stub_dir"
 cat >"${stub_dir}/appflight" <<'STUB'
 #!/usr/bin/env bash
-if [ "$1" = "version" ]; then echo "0.8.0"; exit 0; fi
+if [ "$1" = "version" ]; then echo "0.8.1"; exit 0; fi
 case " $* " in
   *" --deep "*)
     if [ "${APPFLIGHT_TOKEN:-}" != "header.payload.signature" ]; then
