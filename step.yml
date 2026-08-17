@@ -155,8 +155,16 @@ inputs:
         here (for example `$APPFLIGHT_API_TOKEN`). Never commit the token to
         `bitrise.yml`.
 
+        In the Bitrise Secret settings, enable **Replace variables in inputs**
+        so the token value reaches this input instead of the literal variable
+        name. Pass the raw token only, without quotes or a `Bearer` prefix.
+
+        The printed access token expires after 15 minutes. Appflight does not
+        currently issue a supported long-lived CI/API token.
+
         Ignored when `deep` is `false`.
       is_sensitive: true
+      is_expand: true
       is_required: false
 
 outputs:

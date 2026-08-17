@@ -98,6 +98,21 @@ if [ "$deep" = "true" ] && [ -z "$api_token" ]; then
   exit 1
 fi
 
+if [ "$deep" = "true" ]; then
+  if [[ "$api_token" == \$* ]]; then
+    err "api_token contains an unexpanded environment-variable reference."
+    err "Enable 'Replace variables in inputs' for the Bitrise secret, then"
+    err "select that secret for this step's api_token input."
+    exit 1
+  fi
+  if ! [[ "$api_token" =~ ^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$ ]]; then
+    err "api_token is not a valid Appflight CLI access-token value."
+    err "Pass the raw three-part token printed by 'appflight login --print-token'."
+    err "Do not include quotes, whitespace, or a 'Bearer ' prefix."
+    exit 1
+  fi
+fi
+
 if [ "$deep" = "false" ] && [ -n "$api_token" ]; then
   warn "api_token is set but deep is 'false'; the token will not be used."
 fi
@@ -195,14 +210,19 @@ set -e
 json_args=(check "$project_path" --fail-on "$fail_on" --json)
 if [ "$deep" = "true" ]; then
   json_args+=(--deep)
-  export APPFLIGHT_TOKEN="$api_token"
   rule
   info "AI analysis (--deep) and JSON report"
   rule
 fi
 
 set +e
-appflight "${json_args[@]}" >"$report_path"
+if [ "$deep" = "true" ]; then
+  # Command-scoped injection keeps the credential out of argv and guarantees
+  # that the exact validated input is present for the one process that needs it.
+  APPFLIGHT_TOKEN="$api_token" appflight "${json_args[@]}" >"$report_path"
+else
+  appflight "${json_args[@]}" >"$report_path"
+fi
 gate_status=$?
 set -e
 
