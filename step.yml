@@ -1,5 +1,5 @@
 title: |-
-  Appflight App Store Compliance Check
+  Check App Store Compliance with Appflight
 summary: |-
   Scans an iOS project for App Store review risks before submission, writes a
   JSON report as a build artifact, and fails the build on findings.
@@ -41,7 +41,6 @@ support_url: https://github.com/Azura2025/bitrise-step-appflight/issues
 
 type_tags:
   - test
-  - utility
 
 project_type_tags:
   - ios
@@ -72,12 +71,15 @@ inputs:
         add one step instance per app instead.
       is_required: true
 
-  - appflight_version: "0.8.1"
+  - appflight_version: "0.9.1"
     opts:
       title: "Appflight CLI version"
       summary: "Exact npm version of the appflight CLI to install."
       description: |-
-        The exact version of the `appflight` npm package to install.
+        The exact version of the `appflight` npm package to install on every
+        run. Fetching the pinned release per run avoids relying on a stale
+        preinstalled or cached compliance ruleset while keeping verdicts
+        reproducible for a reviewed version.
 
         **Pinning is deliberate.** This input intentionally does not accept or
         default to `latest`. A compliance gate must be reproducible: the same
@@ -150,17 +152,23 @@ inputs:
         The Appflight access token used to authenticate the paid `--deep` tier.
         Exported to the CLI as `APPFLIGHT_TOKEN`.
 
-        Generate it locally with `appflight login --print-token` and store it as
-        a **Bitrise secret environment variable**, then reference the secret
-        here (for example `$APPFLIGHT_API_TOKEN`). Never commit the token to
-        `bitrise.yml`.
+        Generate a named, revocable CI token on a trusted workstation:
+
+        `appflight login`
+
+        `appflight token create --name "Bitrise nightly" --print-token`
+
+        Store the printed token as a **Bitrise secret environment variable**,
+        then reference the secret here (for example `$APPFLIGHT_API_TOKEN`).
+        Never commit the token to `bitrise.yml`.
 
         In the Bitrise Secret settings, enable **Replace variables in inputs**
         so the token value reaches this input instead of the literal variable
         name. Pass the raw token only, without quotes or a `Bearer` prefix.
 
-        The printed access token expires after 15 minutes. Appflight does not
-        currently issue a supported long-lived CI/API token.
+        The CI token is scoped to deep analysis and does not expire on a
+        calendar. It remains subject to the account's live paid entitlement
+        and quota, and can be revoked with `appflight token revoke <token-id>`.
 
         Ignored when `deep` is `false`.
       is_sensitive: true

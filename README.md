@@ -32,7 +32,7 @@ second pass is the authoritative one, because it is the pass that includes
 ## What runs where, and what leaves the machine
 
 This section inlines the data-boundary contract for the pinned
-`appflight@0.8.1` package. A reviewer does not need access to another repository
+`appflight@0.9.1` package. A reviewer does not need access to another repository
 or package URL to understand the step.
 
 ### Software installed on the build machine
@@ -41,6 +41,11 @@ or package URL to understand the step.
 real global install of the public npm package; the CLI is not vendored into this
 repository. The version must be exact (`latest` is rejected), and the resolved
 version is printed in the build log.
+
+The per-run install is deliberate: the exact version keeps builds
+reproducible, while fetching it for each run ensures the VM uses the ruleset
+shipped by that reviewed release rather than a stale copy frozen in a base
+image or wrapper bundle.
 
 ### Commands run by this step
 
@@ -124,8 +129,10 @@ Their contents are bounded as follows:
   path, line, and redacted snippet.
 - `facts` is an aggregate digest: detected SDK and dependency names and
   versions, detected/deprecated/Required Reason APIs, parsed `Info.plist`
-  permission facts, entitlement names, privacy-manifest summary, IAP/restore
-  signals, and fired code-risk rule IDs/counts. It can include at most 40
+  permission facts, entitlement names, and a privacy-manifest summary whose
+  `tracking_declaration` is `absent`, `false`, `true`, or `mixed` and whose
+  `tracking` value is null when there is no single declared boolean. It also
+  includes IAP/restore signals and fired code-risk rule IDs/counts, plus at most 40
   repo-relative `context_paths` selected because their filenames indicate
   review-sensitive areas. It is not the full repository tree.
 - `code_excerpts` contains at most eight selected excerpts. Each has a
@@ -189,7 +196,7 @@ on its own.
 | Input | Default | Required | Description |
 |---|---|---|---|
 | `project_path` | `.` | yes | Directory to scan. Must be a **single app root**. |
-| `appflight_version` | `0.8.1` | yes | Exact npm version. `latest` is rejected. |
+| `appflight_version` | `0.9.1` | yes | Exact npm version. `latest` is rejected. |
 | `fail_on` | `critical` | yes | `critical` \| `warning` \| `suggestion` \| `none` |
 | `deep` | `false` | yes | `true` enables paid AI analysis and transmits excerpts. |
 | `api_token` | *(empty)* | no | Token for `--deep`. Sensitive; use a Bitrise secret. |
@@ -333,7 +340,7 @@ workflows:
           title: Appflight compliance check
           inputs:
             - project_path: "."
-            - appflight_version: "0.8.1"
+            - appflight_version: "0.9.1"
             - fail_on: "critical"
             - deep: "false"
       - deploy-to-bitrise-io@2: {}
@@ -342,10 +349,10 @@ workflows:
 Pin to a tag instead of `main` once you have reviewed a release:
 
 ```yaml
-      - git::https://github.com/Azura2025/bitrise-step-appflight.git@v0.2.3:
+      - git::https://github.com/Azura2025/bitrise-step-appflight.git@v0.2.4:
 ```
 
-`v0.2.3` is the current tagged release and pins `appflight@0.8.1`. The step and
+`v0.2.4` is the current tagged release and pins `appflight@0.9.1`. The step and
 its output/artifact handoff have been exercised successfully on hosted Bitrise
 hardware.
 
@@ -360,14 +367,14 @@ workflows:
           title: Compliance — App One
           inputs:
             - project_path: "./AppOne"
-            - appflight_version: "0.8.1"
+            - appflight_version: "0.9.1"
             - fail_on: "critical"
       - git::https://github.com/Azura2025/bitrise-step-appflight.git@main:
           title: Compliance — App Two
           is_always_run: true
           inputs:
             - project_path: "./AppTwo"
-            - appflight_version: "0.8.1"
+            - appflight_version: "0.9.1"
             - fail_on: "critical"
       - deploy-to-bitrise-io@2: {}
 ```
@@ -383,7 +390,7 @@ Trigger it from Bitrise's scheduled builds (for example 02:00 daily).
       - git::https://github.com/Azura2025/bitrise-step-appflight.git@main:
           inputs:
             - project_path: "."
-            - appflight_version: "0.8.1"
+            - appflight_version: "0.9.1"
             - fail_on: "warning"
             - deep: "true"
             - api_token: "$APPFLIGHT_API_TOKEN"   # a Bitrise secret
@@ -397,7 +404,7 @@ Not yet published. Once accepted, the same configuration becomes:
       - appflight-compliance-check@1:
           inputs:
             - project_path: "."
-            - appflight_version: "0.8.1"
+            - appflight_version: "0.9.1"
             - fail_on: "critical"
 ```
 
@@ -418,7 +425,7 @@ Not yet published. Once accepted, the same configuration becomes:
 ## Report artifact and output contract
 
 This section inlines the complete contract relevant to the pinned
-`appflight@0.8.1` release. `appflight-report.json` uses contract version `1.3`.
+`appflight@0.9.1` release. `appflight-report.json` uses contract version `1.3`.
 CI pipelines can rely on the exit codes and JSON semantics below; parsers must
 tolerate unknown additive fields.
 
@@ -444,7 +451,7 @@ representative shape is:
 ```json
 {
   "schemaVersion": "1.3",
-  "tool": { "name": "appflight", "version": "0.8.1" },
+  "tool": { "name": "appflight", "version": "0.9.1" },
   "command": "check",
   "root": "/path/to/app",
   "scannedAt": "2026-08-11T02:00:00.000Z",
@@ -550,7 +557,7 @@ Verified so far:
   runner, including `envman` output export into a following step, artifact
   creation in `$BITRISE_DEPLOY_DIR`, the gate failing the build on a critical
   finding, and the fail-fast on `deep` without a token.
-- 47 assertions pass against the real published CLI (`appflight@0.8.1`).
+- 47 assertions pass against the real published CLI (`appflight@0.9.1`).
 - The self-test workflow passes on hosted Bitrise hardware, including the
   pinned global npm install, PATH resolution, `envman` output export, and
   `$BITRISE_DEPLOY_DIR` artifact handoff.
