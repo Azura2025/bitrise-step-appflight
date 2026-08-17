@@ -242,8 +242,25 @@ Generate a token locally:
 appflight login --print-token
 ```
 
-Store it as a Bitrise **secret** environment variable (Workflow Editor →
-Secrets), then reference the secret from the step input. Never commit it.
+Copy the single token line written to stdout. The `api_token` value must be the
+raw three-part token: do not add quotes or a `Bearer` prefix.
+
+Store it as a Bitrise **Secret** environment variable (Workflow Editor →
+Secrets). In that Secret's settings, enable **Replace variables in inputs**
+(`expand_in_step_inputs` in the Bitrise API). Then select the Secret for this
+step's `api_token` input, for example `$APPFLIGHT_API_TOKEN`. A protected Secret
+that is not enabled for input expansion reaches the step as the literal text
+`$APPFLIGHT_API_TOKEN`; the step detects that and fails before installing or
+scanning. Never commit the token.
+
+The step validates the input without printing it and injects it only into the
+authoritative deep command as `APPFLIGHT_TOKEN`. It is not placed in argv.
+
+The value printed by `login --print-token` is an access token with a 15-minute
+lifetime. Appflight does **not** currently provide a supported long-lived
+CI/API token. For this hosted validation, generate the token immediately before
+starting the build. Do not use a Supabase/web-session token or try to extract an
+internal refresh token.
 
 #### Monthly AI quota
 

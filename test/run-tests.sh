@@ -200,6 +200,35 @@ rm -rf "$ws"
 echo
 
 # ─────────────────────────────────────────────────────────────────────────────
+bold "4b. deep=true rejects unresolved or malformed secret values"
+ws="$(make_workspace clean-app)"
+
+run_step "$(skip_install_flag)" \
+  BITRISE_DEPLOY_DIR="${ws}/deploy" \
+  project_path="${ws}/app" \
+  appflight_version="$PINNED_VERSION" \
+  fail_on="critical" \
+  deep="true" \
+  api_token='$APPFLIGHT_API_TOKEN'
+
+assert_eq 1 "$STEP_STATUS" "unexpanded secret reference exits 1"
+assert_contains "$STEP_OUT" "unexpanded environment-variable reference" "identifies Bitrise secret expansion"
+assert_contains "$STEP_OUT" "Replace variables in inputs" "gives the Bitrise setting to enable"
+assert_no_file "${ws}/deploy/appflight-report.json" "no artifact written for an unresolved secret"
+
+run_step "$(skip_install_flag)" \
+  BITRISE_DEPLOY_DIR="${ws}/deploy" \
+  project_path="${ws}/app" \
+  appflight_version="$PINNED_VERSION" \
+  fail_on="critical" \
+  deep="true" \
+  api_token="not-an-appflight-token"
+
+assert_eq 1 "$STEP_STATUS" "malformed token exits 1"
+assert_contains "$STEP_OUT" "raw three-part token" "explains the accepted token shape"
+rm -rf "$ws"
+echo
+
 bold "5. Invalid configuration is rejected before install"
 ws="$(make_workspace clean-app)"
 
@@ -256,6 +285,44 @@ rm -rf "$ws"
 echo
 
 # ─────────────────────────────────────────────────────────────────────────────
+bold "6b. deep=true injects api_token as APPFLIGHT_TOKEN for the CLI only"
+ws="$(make_workspace clean-app)"
+stub_dir="${ws}/stub"
+mkdir -p "$stub_dir"
+cat >"${stub_dir}/appflight" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1" = "version" ]; then echo "0.8.0"; exit 0; fi
+case " $* " in
+  *" --deep "*)
+    if [ "${APPFLIGHT_TOKEN:-}" != "header.payload.signature" ]; then
+      echo "missing command-scoped APPFLIGHT_TOKEN" >&2
+      exit 2
+    fi
+    printf '%s\n' '{"summary":{"total":0},"gate":{"triggered":false}}'
+    ;;
+  *)
+    echo "deterministic stub"
+    ;;
+esac
+exit 0
+STUB
+chmod +x "${stub_dir}/appflight"
+
+run_step APPFLIGHT_STEP_SKIP_INSTALL=true \
+  PATH="${stub_dir}:${PATH}" \
+  BITRISE_DEPLOY_DIR="${ws}/deploy" \
+  project_path="${ws}/app" \
+  appflight_version="$PINNED_VERSION" \
+  fail_on="critical" \
+  deep="true" \
+  api_token="header.payload.signature"
+
+assert_eq 0 "$STEP_STATUS" "valid deep credential reaches the CLI"
+assert_file "${ws}/deploy/appflight-report.json" "deep JSON artifact written"
+assert_eq "0" "$(json_field "${ws}/deploy/appflight-report.json" summary.total)" "deep report is parsed"
+rm -rf "$ws"
+echo
+
 bold "7. Missing BITRISE_DEPLOY_DIR degrades with a warning"
 ws="$(make_workspace clean-app)"
 pushd "$ws" >/dev/null
