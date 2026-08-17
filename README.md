@@ -236,10 +236,11 @@ Findings below the threshold still appear in the log and the JSON artifact.
 immediately with an explanation rather than quietly running a deterministic-only
 scan, which would make a green build look like an AI-verified one.
 
-Generate a token locally:
+On a trusted workstation, sign in and mint a named token for this pipeline:
 
 ```sh
-appflight login --print-token
+appflight login
+appflight token create --name "Bitrise nightly" --print-token
 ```
 
 Copy the single token line written to stdout. The `api_token` value must be the
@@ -256,11 +257,23 @@ scanning. Never commit the token.
 The step validates the input without printing it and injects it only into the
 authoritative deep command as `APPFLIGHT_TOKEN`. It is not placed in argv.
 
-The value printed by `login --print-token` is an access token with a 15-minute
-lifetime. Appflight does **not** currently provide a supported long-lived
-CI/API token. For this hosted validation, generate the token immediately before
-starting the build. Do not use a Supabase/web-session token or try to extract an
-internal refresh token.
+The CI token does not expire on a calendar and is scoped only to authenticated
+`--deep` analysis. It cannot inspect the account, manage tokens, refresh an
+interactive session, or access App Store Connect. Appflight checks both the
+token's revocation record and the account's current paid entitlement on every
+deep request, then uses the same monthly-quota/top-up path as an interactive
+run. Canceling paid access does not leave the token entitled.
+
+Create a separate named token per pipeline. Review and revoke tokens from a
+signed-in workstation:
+
+```sh
+appflight token list
+appflight token revoke <token-id>
+```
+
+Revoke a token immediately if it is exposed. Do not use a Supabase/web-session
+token or try to extract an internal refresh token.
 
 #### Monthly AI quota
 
