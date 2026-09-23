@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 #
-# Bitrise step: Appflight App Store Compliance Check.
+# Bitrise step: Appflight App Store / Google Play Compliance Check.
 #
 # Wraps the published `appflight` npm CLI. The CLI itself is unmodified; this
 # script installs a pinned version, runs it, exports a JSON artifact, and maps
 # the CLI's documented exit codes onto a build pass/fail.
 #
-# Exit-code contract (docs/cli-output-contract.md, contract version 1.2):
+# Exit-code contract (docs/cli-output-contract.md, contract version 1.9):
 #   0  scan completed, nothing at/above the threshold  -> build passes
 #   1  scan completed, findings at/above the threshold -> build fails (the gate)
 #   2  usage or tool error, scan did NOT complete      -> build fails, distinctly
@@ -45,6 +45,12 @@ appflight_version="${appflight_version:-}"
 fail_on="${fail_on:-critical}"
 deep="${deep:-false}"
 api_token="${api_token:-}"
+platform="${platform:-auto}"
+android_module="${android_module:-}"
+android_variant="${android_variant:-}"
+allow_gradle_network="${allow_gradle_network:-false}"
+distribution="${distribution:-}"
+policy_context_file="${policy_context_file:-}"
 
 # ── Validation ───────────────────────────────────────────────────────────────
 # Every invalid configuration fails here, before anything is installed, so a
@@ -77,6 +83,35 @@ case "$deep" in
     exit 1
     ;;
 esac
+
+case "$platform" in
+  auto|ios|android) ;;
+  *)
+    err "platform must be one of: auto, ios, android (got '${platform}')."
+    exit 1
+    ;;
+esac
+
+case "$allow_gradle_network" in
+  true|false) ;;
+  *)
+    err "allow_gradle_network must be 'true' or 'false' (got '${allow_gradle_network}')."
+    exit 1
+    ;;
+esac
+
+case "$distribution" in
+  ""|google_play|non_play) ;;
+  *)
+    err "distribution must be empty, google_play or non_play (got '${distribution}')."
+    exit 1
+    ;;
+esac
+
+if [ "$platform" = "ios" ] && { [ -n "$android_module" ] || [ -n "$android_variant" ] || [ "$allow_gradle_network" = "true" ] || [ -n "$distribution" ] || [ -n "$policy_context_file" ]; }; then
+  err "Android-only inputs android_module, android_variant, allow_gradle_network, distribution, and policy_context_file cannot be used with platform=ios."
+  exit 1
+fi
 
 if [ ! -d "$project_path" ]; then
   err "project_path '${project_path}' is not a directory."
@@ -179,13 +214,33 @@ fi
 
 info "Configuration"
 echo "    project_path : ${project_path}"
+echo "    platform     : ${platform}"
+if [ -n "$android_module" ]; then echo "    module       : ${android_module}"; fi
+if [ -n "$android_variant" ]; then echo "    variant      : ${android_variant}"; fi
+echo "    gradle net   : ${allow_gradle_network}"
 echo "    fail_on      : ${fail_on}"
 echo "    deep         : ${deep}"
 if [ "$deep" = "true" ]; then
-  echo "    data boundary: deterministic findings, a facts digest, and REDACTED"
-  echo "                   code excerpts are sent to the Appflight API."
+  echo "    data boundary: findings and platform facts are sent to Appflight; iOS"
+  echo "                   may include REDACTED excerpts, Android v1 sends none."
 else
-  echo "    data boundary: local only. No source code or project data is sent."
+  echo "    data boundary: no source code or project data is sent to Appflight."
+fi
+# The execution disclosure is printed whenever Android execution is possible for
+# this invocation, and before any scan runs. platform=auto may still resolve to
+# Android, so the warning has to precede discovery; the Step does not try to
+# predict the outcome, which is why the wording says "may execute". Detection
+# stays owned by the CLI.
+if [ "$platform" != "ios" ]; then
+  echo "    Android note : Android scans may execute the repository Gradle wrapper"
+  echo "                   with this worker's OS permissions."
+  if [ "$allow_gradle_network" = "true" ]; then
+    echo "                   Gradle dependency network resolution is enabled for this run."
+  else
+    echo "                   Gradle dependency resolution is offline for this run."
+  fi
+  echo "                   Neither setting is an OS sandbox for build logic."
+  echo "                   This two-pass wrapper evaluates that build logic twice."
 fi
 echo "    report       : ${report_path}"
 
@@ -198,8 +253,15 @@ rule
 info "Deterministic scan"
 rule
 
+common_args=(check "$project_path" --fail-on "$fail_on" --platform "$platform")
+if [ -n "$android_module" ]; then common_args+=(--module "$android_module"); fi
+if [ -n "$android_variant" ]; then common_args+=(--variant "$android_variant"); fi
+if [ "$allow_gradle_network" = "true" ]; then common_args+=(--allow-gradle-network); fi
+if [ -n "$distribution" ]; then common_args+=(--distribution "$distribution"); fi
+if [ -n "$policy_context_file" ]; then common_args+=(--policy-context "$policy_context_file"); fi
+
 set +e
-appflight check "$project_path" --fail-on "$fail_on"
+appflight "${common_args[@]}"
 human_status=$?
 set -e
 
@@ -207,7 +269,7 @@ set -e
 # This is the run whose exit code decides the build, because it is the run that
 # includes --deep when the AI tier is enabled.
 
-json_args=(check "$project_path" --fail-on "$fail_on" --json)
+json_args=("${common_args[@]}" --json)
 if [ "$deep" = "true" ]; then
   json_args+=(--deep)
   rule
@@ -238,17 +300,32 @@ fi
 # Node is guaranteed here because npm was required above, so this needs no jq.
 
 finding_count="unknown"
+evaluation_status="unknown"
+verdict="unknown"
 if [ -n "$report_path" ]; then
-  finding_count="$(node -e '
+  report_metadata="$(node -e '
     const fs = require("fs");
     try {
       const report = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
       const total = report?.summary?.total;
-      process.stdout.write(Number.isInteger(total) ? String(total) : "unknown");
+      const count = Number.isInteger(total) && total >= 0 ? String(total) : "unknown";
+      const verdict = ["clear", "findings", "not_fully_evaluated"].includes(report.verdict) ? report.verdict : "unknown";
+      const status = ["complete", "incomplete", "unknown"].includes(report.evaluationStatus) ? report.evaluationStatus : "unknown";
+      // Explicit partial scope always wins; counts and exit codes prove no completeness.
+      const incomplete = verdict === "not_fully_evaluated" || status === "incomplete" || report.scope?.status === "incomplete";
+      const effective = status === "unknown" || report.scope?.status === "unknown" ? "unknown" : incomplete ? "incomplete" : status;
+      const effectiveVerdict = incomplete ? "not_fully_evaluated" : effective === "complete" ? verdict : "unknown";
+      process.stdout.write([count, effective, effectiveVerdict].join("|"));
     } catch {
-      process.stdout.write("unknown");
+      process.stdout.write("unknown|unknown|unknown");
     }
-  ' "$report_path" 2>/dev/null || echo "unknown")"
+  ' "$report_path" 2>/dev/null || echo "unknown|unknown|unknown")"
+  IFS='|' read -r finding_count evaluation_status verdict <<< "$report_metadata"
+fi
+if [ "$gate_status" -ne 0 ] && [ "$gate_status" -ne 1 ]; then
+  finding_count="unknown"
+  evaluation_status="unknown"
+  verdict="unknown"
 fi
 
 # ── Export outputs ───────────────────────────────────────────────────────────
@@ -258,6 +335,8 @@ rule
 info "Outputs"
 export_output "APPFLIGHT_FINDING_COUNT" "$finding_count"
 export_output "APPFLIGHT_REPORT_PATH" "$report_path"
+export_output "APPFLIGHT_EVALUATION_STATUS" "$evaluation_status"
+export_output "APPFLIGHT_VERDICT" "$verdict"
 
 if [ -n "$report_path" ]; then
   info "JSON report written to ${report_path}"
@@ -267,6 +346,12 @@ fi
 # ── Map the CLI exit code onto the build result ──────────────────────────────
 
 rule
+if [ "$gate_status" -eq 0 ] || [ "$gate_status" -eq 1 ]; then
+  if [ "$verdict" = "not_fully_evaluated" ] || [ "$evaluation_status" != "complete" ]; then
+    warn "Analysis incomplete or scope unknown; this is not a clean result. More findings may exist."
+    warn "Observed findings remain valid. A passing threshold does not establish complete coverage."
+  fi
+fi
 # When the AI tier adds findings the deterministic pass did not have, say so
 # explicitly — otherwise the log above looks inconsistent with the verdict.
 if [ "$deep" = "true" ] && [ "$human_status" -ne "$gate_status" ]; then
@@ -276,7 +361,7 @@ fi
 
 case "$gate_status" in
   0)
-    info "PASSED — no findings at or above the '${fail_on}' threshold."
+    info "PASSED — finding threshold only: no findings at or above '${fail_on}'."
     if [ "$finding_count" != "unknown" ] && [ "$finding_count" -gt 0 ] 2>/dev/null; then
       echo "    ${finding_count} finding(s) below the threshold are in the report."
     fi
@@ -301,6 +386,9 @@ case "$gate_status" in
     err "  - project_path points at a parent directory containing several"
     err "    independent app roots; use one step instance per app root."
     err "  - project_path is not an app project."
+    err "  - a mixed Android/iOS root needs platform or a narrower project_path."
+    err "  - Gradle could not resolve the selected Android release variant,"
+    err "    dependencies, merged manifest, or release resource layers."
     err "  - --deep was requested with an invalid or expired token."
     err "  - the Appflight API was unreachable from the build machine."
     exit 1

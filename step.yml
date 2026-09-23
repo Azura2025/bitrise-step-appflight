@@ -1,11 +1,11 @@
 title: |-
-  Check App Store Compliance with Appflight
+  Check App Store and Google Play Compliance with Appflight
 summary: |-
-  Scans an iOS project for App Store review risks before submission, writes a
+  Scans an iOS or Android project for store review risks before submission, writes a
   JSON report as a build artifact, and fails the build on findings.
 description: |-
   Runs the [Appflight CLI](https://www.npmjs.com/package/appflight) against an
-  iOS project and gates the build on App Store review risks.
+  iOS or Android project and gates the build on App Store or Google Play review risks.
 
   The step installs a **pinned** version of the `appflight` npm package onto the
   build machine, runs the deterministic check, and writes a machine-readable
@@ -18,12 +18,23 @@ description: |-
   background modes, third-party SDK risk, in-app purchase restore requirements,
   hardcoded secrets, private API usage, and other App Store review rules.
 
+  Android uses an isolated rule engine covering target API, restricted
+  permissions, Data Safety versus resolved SDKs, cleartext traffic, release
+  debug/test flags, and placeholder resources.
+
   ### Data boundary
 
   The default (free) deterministic scan runs entirely on the build machine and
-  sends **no source code or project data**. Setting `deep: true` enables the
-  paid AI tier, which **does** send allowlisted findings, a facts digest, and
-  redacted code excerpts to the Appflight API, and requires an API token.
+  sends **no source code or project data to Appflight**. Android scans execute
+  the repository Gradle wrapper and trusted build logic with the worker's OS
+  permissions; Appflight does not add an OS sandbox. Gradle is offline by
+  default, but host egress policy is required to block arbitrary build logic.
+  The wrapper runs `check` twice for log and JSON output, so Android build logic
+  is evaluated twice per step invocation.
+  Setting `deep: true` enables the
+  paid AI tier, which **does** send allowlisted findings and a platform facts
+  digest to the Appflight API, and requires an API token. iOS may also send
+  redacted code excerpts; Android v1 sends none.
 
   See the repository README for the full field list and the security review
   notes.
@@ -44,6 +55,7 @@ type_tags:
 
 project_type_tags:
   - ios
+  - android
   - react-native
   - flutter
   - cordova
@@ -71,7 +83,92 @@ inputs:
         add one step instance per app instead.
       is_required: true
 
-  - appflight_version: "0.9.1"
+  - platform: "auto"
+    opts:
+      title: "Project platform"
+      summary: "Auto-detect one platform, or select iOS/Android explicitly."
+      description: |-
+        Use `ios` or `android` for a mixed React Native/Flutter repository.
+        `auto` fails closed when both platforms are present; v1 never combines
+        the two engines or rule namespaces.
+      value_options:
+        - "auto"
+        - "ios"
+        - "android"
+      is_required: true
+
+  - android_module: ""
+    opts:
+      title: "Android application module"
+      summary: "Optional Gradle module selector, for example :app."
+      description: |-
+        Required when the selected Android root contains more than one
+        application module. Passed to `appflight check --module`.
+      is_required: false
+
+  - android_variant: ""
+    opts:
+      title: "Android release variant"
+      summary: "Optional variant selector, for example prodRelease."
+      description: |-
+        Required when more than one release flavor is available. Passed to
+        `appflight check --variant`.
+      is_required: false
+
+  - distribution: ""
+    opts:
+      title: "Play distribution"
+      summary: "Whether this build ships through Google Play."
+      description: |-
+        Sets `policyContext.distribution` without a checked-in
+        `appflight.play.json`. Without a distribution declaration, dependent
+        Play rules report `play_distribution_unknown`. Declaring google_play
+        enables evaluation when the remaining release and form-factor evidence
+        is available; it does not guarantee complete analysis.
+
+        Leave empty to use the value in `appflight.play.json`. When both are
+        set this input wins and the report records the override under
+        `policyContextOverrides`, so a verdict never rests silently on a
+        declaration that differs from the one in the repository.
+
+        The remaining policy fields stay in the file, reachable through
+        `policy_context_file`.
+      value_options:
+        - ""
+        - "google_play"
+        - "non_play"
+      is_required: false
+
+  - policy_context_file: ""
+    opts:
+      title: "Policy context file"
+      summary: "Optional path to a JSON policyContext, for the fields that have no input."
+      description: |-
+        Path to a JSON file holding a `policyContext` object (`mode`,
+        `formFactors`, `publishedRelease`, `privateDistribution`,
+        `extensions`), relative to the project path or absolute. Passed to
+        `appflight check --policy-context`.
+
+        Only `distribution` has an input of its own, because it is the field
+        that decides whether the Play rules run at all. The rest refine a
+        verdict and live here rather than becoming one input each.
+      is_required: false
+
+  - allow_gradle_network: "false"
+    opts:
+      title: "Allow Gradle network resolution"
+      summary: "Removes Gradle's default --offline flag."
+      description: |-
+        Android analysis executes repository build logic with the Bitrise
+        worker's OS permissions. The default keeps Gradle dependency resolution
+        offline. This setting allows resolution of missing plugins/dependencies;
+        neither value is an OS network sandbox for arbitrary build logic.
+      value_options:
+        - "false"
+        - "true"
+      is_required: true
+
+  - appflight_version: "0.11.0"
     opts:
       title: "Appflight CLI version"
       summary: "Exact npm version of the appflight CLI to install."
@@ -122,23 +219,25 @@ inputs:
   - deep: "false"
     opts:
       title: "Enable AI analysis (--deep)"
-      summary: "Paid AI reasoning. Sends redacted code excerpts off the machine."
+      summary: "Paid AI reasoning. Sends allowlisted findings and platform facts."
       description: |-
         When `true`, adds the CLI's `--deep` flag, which runs paid AI reasoning
         over the deterministic findings.
 
         **This changes the data boundary.** With `deep: false` (the default),
-        the scan is fully local and no source code or project data leaves the
-        build machine. With `deep: true`, the CLI sends allowlisted
-        deterministic findings, a facts digest, and a small set of **redacted**
-        code excerpts to the Appflight API.
+        the CLI sends no source code or project data to Appflight. Android
+        build logic still runs with the worker's permissions as described above.
+        With `deep: true`, the CLI sends allowlisted
+        deterministic findings and a facts digest to the Appflight API. iOS
+        may also send a small set of **redacted** code excerpts; Android v1
+        always sends an empty excerpt list.
 
         Requires `api_token`. If `deep` is `true` and no token is provided the
         step fails immediately with a clear message rather than silently
         running a deterministic-only scan.
 
         Leave this off unless your security review has explicitly approved
-        sending code excerpts to a third-party service.
+        the platform-specific transfer to a third-party service.
       value_options:
         - "false"
         - "true"
@@ -182,11 +281,22 @@ outputs:
       summary: "Total number of findings reported by the scan."
       description: |-
         The total number of findings in the report, across every severity —
-        including findings below the `fail_on` threshold. Set to `0` on a clean
-        scan, and to `unknown` if the scan errored before producing a report.
+        including findings below the `fail_on` threshold. Set to `0` when no
+        findings were observed, and to `unknown` on a tool error. Zero does not
+        establish complete coverage or a clean result.
 
         Exported whether the step passes or fails, so a later step (a Slack
         notification, for example) can read it on a failed build.
+
+  - APPFLIGHT_EVALUATION_STATUS:
+    opts:
+      title: "Analysis evaluation status"
+      summary: "complete, incomplete, or unknown; independent of the severity gate."
+
+  - APPFLIGHT_VERDICT:
+    opts:
+      title: "Analysis verdict"
+      summary: "clear, findings, not_fully_evaluated, or unknown when unavailable."
 
   - APPFLIGHT_REPORT_PATH:
     opts:

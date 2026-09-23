@@ -15,7 +15,7 @@ set -uo pipefail
 readonly TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly REPO_DIR="$(cd "${TEST_DIR}/.." && pwd)"
 readonly STEP="${REPO_DIR}/step.sh"
-readonly PINNED_VERSION="0.9.1"
+readonly PINNED_VERSION="0.11.0"
 
 pass_count=0
 fail_count=0
@@ -42,6 +42,15 @@ assert_contains() {
     ok "${what}"
   else
     notok "${what}: log did not contain '${needle}'"
+  fi
+}
+
+assert_not_contains() {
+  local haystack="$1" needle="$2" what="$3"
+  if printf '%s' "$haystack" | grep -qF -- "$needle"; then
+    notok "${what}: log unexpectedly contained '${needle}'"
+  else
+    ok "${what}"
   fi
 }
 
@@ -128,10 +137,13 @@ run_step "$(skip_install_flag)" \
 assert_eq 0 "$STEP_STATUS" "step exits 0"
 assert_contains "$STEP_OUT" "PASSED" "log reports PASSED"
 assert_file "${ws}/deploy/appflight-report.json" "JSON artifact written"
+assert_eq "1.9" "$(json_field "${ws}/deploy/appflight-report.json" schemaVersion)" "published CLI emits schema 1.9"
+assert_contains "$STEP_OUT" "APPFLIGHT_VERDICT=$(json_field "${ws}/deploy/appflight-report.json" verdict)" "real scan verdict exported"
+assert_contains "$STEP_OUT" "APPFLIGHT_EVALUATION_STATUS=$(json_field "${ws}/deploy/appflight-report.json" evaluationStatus)" "real scan evaluation status exported"
 assert_eq "0" "$(json_field "${ws}/deploy/appflight-report.json" summary.total)" "report total is 0"
 assert_eq "false" "$(json_field "${ws}/deploy/appflight-report.json" gate.triggered)" "gate not triggered"
 assert_contains "$STEP_OUT" "APPFLIGHT_FINDING_COUNT=0" "finding count exported"
-assert_contains "$STEP_OUT" "data boundary: local only" "local-only boundary stated"
+assert_contains "$STEP_OUT" "no source code or project data is sent to Appflight" "local Appflight API boundary stated"
 rm -rf "$ws"
 echo
 
@@ -250,6 +262,17 @@ assert_contains "$STEP_OUT" "is not a directory" "explains the bad path"
 run_step BITRISE_DEPLOY_DIR="${ws}/deploy" project_path="${ws}/app" \
   appflight_version="$PINNED_VERSION" fail_on="critical" deep="maybe" api_token=""
 assert_eq 1 "$STEP_STATUS" "bad deep value exits 1"
+
+run_step BITRISE_DEPLOY_DIR="${ws}/deploy" project_path="${ws}/app" \
+  appflight_version="$PINNED_VERSION" platform="both" fail_on="critical" deep="false" api_token=""
+assert_eq 1 "$STEP_STATUS" "bad platform exits 1"
+assert_contains "$STEP_OUT" "platform must be one of" "names valid platform selectors"
+
+run_step BITRISE_DEPLOY_DIR="${ws}/deploy" project_path="${ws}/app" \
+  appflight_version="$PINNED_VERSION" platform="ios" android_variant="release" \
+  fail_on="critical" deep="false" api_token=""
+assert_eq 1 "$STEP_STATUS" "Android selector with platform=ios exits 1"
+assert_contains "$STEP_OUT" "Android-only" "rejects cross-platform option mixing"
 rm -rf "$ws"
 echo
 
@@ -261,7 +284,7 @@ mkdir -p "$stub_dir"
 cat >"${stub_dir}/appflight" <<'STUB'
 #!/usr/bin/env bash
 # Stands in for a CLI that cannot complete the scan.
-if [ "$1" = "version" ]; then echo "0.9.1"; exit 0; fi
+if [ "$1" = "version" ]; then echo "0.11.0"; exit 0; fi
 echo "appflight check: scan failed: simulated tool error" >&2
 exit 2
 STUB
@@ -291,7 +314,7 @@ stub_dir="${ws}/stub"
 mkdir -p "$stub_dir"
 cat >"${stub_dir}/appflight" <<'STUB'
 #!/usr/bin/env bash
-if [ "$1" = "version" ]; then echo "0.9.1"; exit 0; fi
+if [ "$1" = "version" ]; then echo "0.11.0"; exit 0; fi
 case " $* " in
   *" --deep "*)
     if [ "${APPFLIGHT_TOKEN:-}" != "header.payload.signature" ]; then
@@ -323,6 +346,227 @@ assert_eq "0" "$(json_field "${ws}/deploy/appflight-report.json" summary.total)"
 rm -rf "$ws"
 echo
 
+bold "6c. Android selectors and execution disclosure reach both passes"
+ws="$(make_workspace clean-app)"
+stub_dir="${ws}/stub"
+mkdir -p "$stub_dir"
+cat >"${stub_dir}/appflight" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1" = "version" ]; then echo "0.11.0"; exit 0; fi
+printf '%s\n' "$*" >>"${APPFLIGHT_ARGS_LOG}"
+case " $* " in
+  *" --json "*) printf '%s\n' '{"summary":{"total":0},"gate":{"triggered":false}}' ;;
+  *) echo "deterministic Android stub" ;;
+esac
+exit 0
+STUB
+chmod +x "${stub_dir}/appflight"
+
+run_step APPFLIGHT_STEP_SKIP_INSTALL=true \
+  APPFLIGHT_ARGS_LOG="${ws}/args.log" \
+  PATH="${stub_dir}:${PATH}" \
+  BITRISE_DEPLOY_DIR="${ws}/deploy" \
+  project_path="${ws}/app" \
+  appflight_version="$PINNED_VERSION" \
+  platform="android" \
+  android_module=":app" \
+  android_variant="playRelease" \
+  allow_gradle_network="true" \
+  fail_on="warning" \
+  deep="false" \
+  api_token=""
+
+assert_eq 0 "$STEP_STATUS" "Android passthrough step exits 0"
+assert_contains "$STEP_OUT" "evaluates that build logic twice" "two Gradle evaluations are disclosed"
+assert_eq 2 "$(wc -l <"${ws}/args.log" | tr -d ' ')" "CLI is invoked twice"
+android_args="$(cat "${ws}/args.log")"
+assert_contains "$android_args" "--platform android" "platform selector reaches the CLI"
+assert_contains "$android_args" "--module :app" "module selector reaches the CLI"
+assert_contains "$android_args" "--variant playRelease" "variant selector reaches the CLI"
+assert_contains "$android_args" "--allow-gradle-network" "Gradle network opt-in reaches the CLI"
+rm -rf "$ws"
+echo
+
+bold "6d. distribution is transported verbatim to both CLI invocations"
+# The step's responsibility is transport, not semantics. What android.target_api
+# finally reports for a given distribution is engine behaviour, proven end to end
+# by the AppScan corpus at 9fef583 (Play repos: evaluated (evidence_available);
+# NewPipe: not_applicable (non_play_distribution)). These stubs deliberately
+# assert nothing about rule status.
+for dist in google_play non_play; do
+  ws="$(make_workspace clean-app)"
+  stub_dir="${ws}/stub"
+  mkdir -p "$stub_dir"
+  cat >"${stub_dir}/appflight" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1" = "version" ]; then echo "0.11.0"; exit 0; fi
+printf '%s\n' "$*" >>"${APPFLIGHT_ARGS_LOG}"
+case " $* " in
+  *" --json "*) printf '%s\n' '{"summary":{"total":0},"gate":{"triggered":false}}' ;;
+  *) echo "deterministic Android stub" ;;
+esac
+exit 0
+STUB
+  chmod +x "${stub_dir}/appflight"
+
+  run_step APPFLIGHT_STEP_SKIP_INSTALL=true \
+    APPFLIGHT_ARGS_LOG="${ws}/args.log" \
+    PATH="${stub_dir}:${PATH}" \
+    BITRISE_DEPLOY_DIR="${ws}/deploy" \
+    project_path="${ws}/app" \
+    appflight_version="$PINNED_VERSION" \
+    platform="android" \
+    distribution="$dist" \
+    fail_on="critical" \
+    deep="false" \
+    api_token=""
+
+  assert_eq 0 "$STEP_STATUS" "distribution=${dist} step exits 0"
+  assert_eq 2 "$(wc -l <"${ws}/args.log" | tr -d ' ')" "distribution=${dist} invokes the CLI twice"
+  # Both passes must carry it: the JSON pass is the one that gates the build.
+  assert_eq 2 "$(grep -c -- "--distribution ${dist}" "${ws}/args.log")" \
+    "distribution=${dist} reaches both deterministic and JSON passes"
+  assert_contains "$(grep -- ' --json' "${ws}/args.log")" "--distribution ${dist}" \
+    "distribution=${dist} present on the gating JSON pass"
+  rm -rf "$ws"
+done
+echo
+
+bold "6e. Omitted distribution forwards no --distribution argument"
+ws="$(make_workspace clean-app)"
+stub_dir="${ws}/stub"
+mkdir -p "$stub_dir"
+cat >"${stub_dir}/appflight" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1" = "version" ]; then echo "0.11.0"; exit 0; fi
+printf '%s\n' "$*" >>"${APPFLIGHT_ARGS_LOG}"
+case " $* " in
+  *" --json "*) printf '%s\n' '{"summary":{"total":0},"gate":{"triggered":false}}' ;;
+  *) echo "deterministic Android stub" ;;
+esac
+exit 0
+STUB
+chmod +x "${stub_dir}/appflight"
+
+run_step APPFLIGHT_STEP_SKIP_INSTALL=true \
+  APPFLIGHT_ARGS_LOG="${ws}/args.log" \
+  PATH="${stub_dir}:${PATH}" \
+  BITRISE_DEPLOY_DIR="${ws}/deploy" \
+  project_path="${ws}/app" \
+  appflight_version="$PINNED_VERSION" \
+  platform="android" \
+  fail_on="critical" \
+  deep="false" \
+  api_token=""
+
+assert_eq 0 "$STEP_STATUS" "omitted distribution step exits 0"
+# No argument at all, rather than a defaulted one: the step must not decide that
+# an Android project ships on Play. The CLI then leaves distribution-dependent
+# rules unevaluated, which is the honest outcome.
+assert_eq 0 "$(grep -c -- "--distribution" "${ws}/args.log")" \
+  "no --distribution argument is synthesised"
+rm -rf "$ws"
+echo
+
+bold "6f. Invalid and cross-platform distribution values are refused"
+ws="$(make_workspace clean-app)"
+
+run_step BITRISE_DEPLOY_DIR="${ws}/deploy" project_path="${ws}/app" \
+  appflight_version="$PINNED_VERSION" platform="android" distribution="sideloaded" \
+  fail_on="critical" deep="false" api_token=""
+assert_eq 1 "$STEP_STATUS" "unsupported distribution exits 1"
+assert_contains "$STEP_OUT" "distribution must be empty, google_play or non_play" \
+  "names the supported distribution values"
+
+run_step BITRISE_DEPLOY_DIR="${ws}/deploy" project_path="${ws}/app" \
+  appflight_version="$PINNED_VERSION" platform="ios" distribution="google_play" \
+  fail_on="critical" deep="false" api_token=""
+assert_eq 1 "$STEP_STATUS" "distribution with platform=ios exits 1"
+assert_contains "$STEP_OUT" "Android-only" "rejects distribution on iOS"
+rm -rf "$ws"
+echo
+
+bold "6g. The Gradle execution disclosure matches the invocation"
+# D1/D2: the disclosure is a security statement, so it must appear exactly when
+# Android execution is possible and must describe the run it precedes. The Step
+# never predicts the platform; platform=auto still warns because it may resolve
+# to Android, and the wording says "may execute" for that reason.
+disclosure_stub() {
+  local dir="$1"
+  mkdir -p "$dir"
+  cat >"${dir}/appflight" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1" = "version" ]; then echo "0.11.0"; exit 0; fi
+case " $* " in
+  *" --json "*) printf '%s\n' '{"summary":{"total":0},"gate":{"triggered":false}}' ;;
+  *) echo "deterministic stub" ;;
+esac
+exit 0
+STUB
+  chmod +x "${dir}/appflight"
+}
+
+# platform=ios: Android execution cannot happen, so the disclosure must be absent.
+ws="$(make_workspace clean-app)"
+disclosure_stub "${ws}/stub"
+run_step APPFLIGHT_STEP_SKIP_INSTALL=true PATH="${ws}/stub:${PATH}" \
+  BITRISE_DEPLOY_DIR="${ws}/deploy" project_path="${ws}/app" \
+  appflight_version="$PINNED_VERSION" platform="ios" \
+  fail_on="critical" deep="false" api_token=""
+assert_eq 0 "$STEP_STATUS" "platform=ios step exits 0"
+assert_not_contains "$STEP_OUT" "Android note" "no Android disclosure on an iOS build"
+assert_not_contains "$STEP_OUT" "may execute the repository Gradle wrapper" \
+  "no Gradle execution claim on an iOS build"
+rm -rf "$ws"
+
+# platform=android, offline: the disclosure must describe this run, not a default.
+ws="$(make_workspace clean-app)"
+disclosure_stub "${ws}/stub"
+run_step APPFLIGHT_STEP_SKIP_INSTALL=true PATH="${ws}/stub:${PATH}" \
+  BITRISE_DEPLOY_DIR="${ws}/deploy" project_path="${ws}/app" \
+  appflight_version="$PINNED_VERSION" platform="android" allow_gradle_network="false" \
+  fail_on="critical" deep="false" api_token=""
+assert_eq 0 "$STEP_STATUS" "platform=android offline step exits 0"
+assert_contains "$STEP_OUT" "may execute the repository Gradle wrapper" \
+  "Android build discloses possible Gradle execution"
+assert_contains "$STEP_OUT" "Gradle dependency resolution is offline for this run" \
+  "offline run is described as offline"
+assert_not_contains "$STEP_OUT" "network resolution is enabled for this run" \
+  "offline run does not claim network resolution"
+assert_contains "$STEP_OUT" "gradle net   : false" "raw setting still shown"
+rm -rf "$ws"
+
+# platform=android, network enabled: the wording must flip with the setting.
+ws="$(make_workspace clean-app)"
+disclosure_stub "${ws}/stub"
+run_step APPFLIGHT_STEP_SKIP_INSTALL=true PATH="${ws}/stub:${PATH}" \
+  BITRISE_DEPLOY_DIR="${ws}/deploy" project_path="${ws}/app" \
+  appflight_version="$PINNED_VERSION" platform="android" allow_gradle_network="true" \
+  fail_on="critical" deep="false" api_token=""
+assert_eq 0 "$STEP_STATUS" "platform=android networked step exits 0"
+assert_contains "$STEP_OUT" "Gradle dependency network resolution is enabled for this run" \
+  "networked run is described as networked"
+assert_not_contains "$STEP_OUT" "resolution is offline for this run" \
+  "networked run does not claim to be offline"
+assert_contains "$STEP_OUT" "gradle net   : true" "raw setting still shown"
+rm -rf "$ws"
+
+# platform=auto: warn before discovery, without asserting which platform wins.
+ws="$(make_workspace clean-app)"
+disclosure_stub "${ws}/stub"
+run_step APPFLIGHT_STEP_SKIP_INSTALL=true PATH="${ws}/stub:${PATH}" \
+  BITRISE_DEPLOY_DIR="${ws}/deploy" project_path="${ws}/app" \
+  appflight_version="$PINNED_VERSION" platform="auto" \
+  fail_on="critical" deep="false" api_token=""
+assert_eq 0 "$STEP_STATUS" "platform=auto step exits 0"
+assert_contains "$STEP_OUT" "may execute the repository Gradle wrapper" \
+  "auto warns before discovery resolves the platform"
+assert_contains "$STEP_OUT" "platform     : auto" "auto is reported as unresolved"
+# The Step must not claim to know the outcome discovery has not reached yet.
+assert_not_contains "$STEP_OUT" "Android project detected" "auto does not assert a platform"
+rm -rf "$ws"
+echo
+
 bold "7. Missing BITRISE_DEPLOY_DIR degrades with a warning"
 ws="$(make_workspace clean-app)"
 pushd "$ws" >/dev/null
@@ -340,6 +584,59 @@ rm -rf "$ws"
 echo
 
 # ─────────────────────────────────────────────────────────────────────────────
+bold "8. Schema 1.9 scope is independent of the severity gate"
+for scenario in partial-empty partial-findings unknown legacy complete; do
+  ws="$(make_workspace clean-app)"
+  mkdir -p "${ws}/stub"
+  cat >"${ws}/stub/appflight" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1" = "version" ]; then echo "0.11.0"; exit 0; fi
+case " $* " in
+  *" --json "*)
+    case "$SCOPE_SCENARIO" in
+      partial-empty) echo '{"schemaVersion":"1.9","verdict":"not_fully_evaluated","evaluationStatus":"incomplete","scope":{"status":"incomplete"},"summary":{"total":0},"risk_score":null}' ;;
+      partial-findings) echo '{"schemaVersion":"1.9","verdict":"not_fully_evaluated","evaluationStatus":"incomplete","scope":{"status":"incomplete"},"summary":{"total":1},"findings":[{"severity":"CRITICAL","rule":{"execution":"enabled","validation":"unvalidated"}}]}' ;;
+      unknown) echo '{"schemaVersion":"1.9","verdict":"not_fully_evaluated","evaluationStatus":"unknown","scope":{"status":"unknown"},"summary":{"total":0}}' ;;
+      legacy) echo '{"summary":{"total":0}}' ;;
+      complete) echo '{"schemaVersion":"1.9","verdict":"clear","evaluationStatus":"complete","scope":{"status":"complete"},"summary":{"total":0},"coverage":{"benchmarkValidationComplete":false}}' ;;
+    esac ;;
+  *) echo "stub deterministic output" ;;
+esac
+if [ "$SCOPE_SCENARIO" = "partial-findings" ]; then exit 1; fi
+exit 0
+STUB
+  chmod +x "${ws}/stub/appflight"
+  run_step APPFLIGHT_STEP_SKIP_INSTALL=true PATH="${ws}/stub:${PATH}" SCOPE_SCENARIO="$scenario" \
+    BITRISE_DEPLOY_DIR="${ws}/deploy" project_path="${ws}/app" \
+    appflight_version="$PINNED_VERSION" platform="ios" fail_on="critical" deep="false" api_token=""
+  if [ "$scenario" = "partial-findings" ]; then
+    assert_eq 1 "$STEP_STATUS" "observed critical finding still fails incomplete analysis"
+    assert_contains "$STEP_OUT" "APPFLIGHT_FINDING_COUNT=1" "observed finding count survives"
+  else
+    assert_eq 0 "$STEP_STATUS" "${scenario}: finding gate still passes"
+    assert_contains "$STEP_OUT" "finding threshold only" "${scenario}: pass is qualified"
+  fi
+  if [ "$scenario" = "complete" ]; then
+    assert_contains "$STEP_OUT" "APPFLIGHT_EVALUATION_STATUS=complete" "explicit complete scope survives unvalidated benchmark metadata"
+    assert_contains "$STEP_OUT" "APPFLIGHT_VERDICT=clear" "explicit clear verdict exported"
+    assert_not_contains "$STEP_OUT" "More findings may exist" "no false incomplete scope for complete report"
+  else
+    assert_contains "$STEP_OUT" "not a clean result" "${scenario}: no false clean claim"
+    assert_contains "$STEP_OUT" "More findings may exist" "${scenario}: absence not conclusive"
+    if [ "$scenario" = "unknown" ] || [ "$scenario" = "legacy" ]; then
+      assert_contains "$STEP_OUT" "APPFLIGHT_EVALUATION_STATUS=unknown" "${scenario}: scope remains unknown"
+    else
+      assert_contains "$STEP_OUT" "APPFLIGHT_EVALUATION_STATUS=incomplete" "${scenario}: incomplete state exported"
+    fi
+    if [ "$scenario" != "legacy" ]; then
+      assert_contains "$STEP_OUT" "APPFLIGHT_VERDICT=not_fully_evaluated" "${scenario}: partial verdict exported"
+    fi
+  fi
+  assert_file "${ws}/deploy/appflight-report.json" "${scenario}: original report retained"
+  rm -rf "$ws"
+done
+echo
+
 rule="========================================================"
 echo "$rule"
 if [ "$fail_count" -eq 0 ]; then

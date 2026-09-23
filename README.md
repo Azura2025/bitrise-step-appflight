@@ -1,7 +1,7 @@
-# Bitrise Step: Appflight App Store Compliance Check
+# Bitrise Step: Appflight Store Compliance Check
 
-Scans an iOS project for App Store review risks on every build, writes a JSON
-report as a build artifact, and fails the build on findings.
+Scans one iOS or Android project for App Store or Google Play review risks,
+writes a JSON report as a build artifact, and fails the build on findings.
 
 This repository is a thin wrapper around the published
 [`appflight`](https://www.npmjs.com/package/appflight) npm CLI. The CLI is
@@ -32,7 +32,7 @@ second pass is the authoritative one, because it is the pass that includes
 ## What runs where, and what leaves the machine
 
 This section inlines the data-boundary contract for the pinned
-`appflight@0.9.1` package. A reviewer does not need access to another repository
+`appflight@0.11.0` package. A reviewer does not need access to another repository
 or package URL to understand the step.
 
 ### Software installed on the build machine
@@ -57,6 +57,15 @@ The wrapper invokes `appflight check` twice:
 
 The step never invokes `appflight watch`, `appflight asc connect`, or
 `appflight check --asc`, and it does not read App Store Connect credentials.
+
+For Android, each pass executes the repository's Gradle wrapper and therefore
+executes repository-controlled settings scripts, build scripts, plugins, and
+configuration hooks with the Bitrise worker's OS permissions. Appflight adds
+resource, output, timeout, path, and secret-environment guardrails, but it does
+not create an OS sandbox. Gradle dependency resolution is offline by default;
+that does not prevent arbitrary build logic from opening sockets. Run Android
+checks only for trusted revisions on an isolated, least-privilege worker with
+egress and credential controls appropriate for build execution.
 
 ### Default (`deep: false`): local analysis plus optional code-free telemetry
 
@@ -112,6 +121,9 @@ Appflight API. AI analysis is performed by a third-party model provider. The
 request serializer permits only these top-level fields:
 
 - `schema_version`
+- `platform`
+- `scope`
+- `coverage`
 - `trigger`
 - `gate`
 - `deterministic_findings`
@@ -124,10 +136,13 @@ request serializer permits only these top-level fields:
 
 Their contents are bounded as follows:
 
+- `scope` and `coverage` describe the analysis domain, file/target inventory,
+  skipped inputs, rule execution and validation. They qualify what was evaluated.
+
 - `deterministic_findings` contains rule IDs, severity, category, guideline,
   title, description, fix, and capped evidence objects with a repo-relative
   path, line, and redacted snippet.
-- `facts` is an aggregate digest: detected SDK and dependency names and
+- For iOS, `facts` is an aggregate digest: detected SDK and dependency names and
   versions, detected/deprecated/Required Reason APIs, parsed `Info.plist`
   permission facts, entitlement names, and a privacy-manifest summary whose
   `tracking_declaration` is `absent`, `false`, `true`, or `mixed` and whose
@@ -135,11 +150,17 @@ Their contents are bounded as follows:
   includes IAP/restore signals and fired code-risk rule IDs/counts, plus at most 40
   repo-relative `context_paths` selected because their filenames indicate
   review-sensitive areas. It is not the full repository tree.
-- `code_excerpts` contains at most eight selected excerpts. Each has a
+- For Android, `facts` contains only the selected module/variant/application ID,
+  target API, permission names, resolved dependency coordinates, whether a Data
+  Safety CSV was supplied and its declared data-type IDs, release flags, and a
+  user-facing resource count.
+- For iOS, `code_excerpts` contains at most eight selected excerpts. Each has a
   repo-relative path, start and end lines, selection reason, and capped,
   redacted content. Excerpts are selected around deterministic evidence,
   detected APIs, and contextual App Review risk signals. Full files and broad
   directories are not sent.
+- For Android, `code_excerpts` is always an empty array. AI may deepen only an
+  existing deterministic Android finding and cannot add a new rule ID.
 - `client` contains CLI, engine, and ruleset versions.
 - `project` contains the project directory basename for display and a
   per-install salted identifier derived from the absolute path. The raw
@@ -196,15 +217,71 @@ on its own.
 | Input | Default | Required | Description |
 |---|---|---|---|
 | `project_path` | `.` | yes | Directory to scan. Must be a **single app root**. |
-| `appflight_version` | `0.9.1` | yes | Exact npm version. `latest` is rejected. |
+| `platform` | `auto` | yes | `auto` \| `ios` \| `android`; mixed roots require an explicit choice. |
+| `android_module` | *(empty)* | no | Android application module, for example `:app`. |
+| `android_variant` | *(empty)* | no | Android release variant, for example `playRelease`. |
+| `allow_gradle_network` | `false` | yes | Removes Gradle `--offline`; does not create or remove an OS egress sandbox. |
+| `distribution` | *(empty)* | no | `google_play` \| `non_play`. Android only. Omitted makes no assumption. |
+| `policy_context_file` | *(empty)* | no | Android only. JSON `policyContext` for the fields that have no input. |
+| `appflight_version` | `0.11.0` | yes | Exact npm version. `latest` is rejected. |
 | `fail_on` | `critical` | yes | `critical` \| `warning` \| `suggestion` \| `none` |
-| `deep` | `false` | yes | `true` enables paid AI analysis and transmits excerpts. |
+| `deep` | `false` | yes | `true` enables paid AI analysis and transmits the disclosed platform payload. |
 | `api_token` | *(empty)* | no | Token for `--deep`. Sensitive; use a Bitrise secret. |
 
 ### `project_path`
 
 Point this at one app root. Scanning a parent directory containing several
 independent app roots is a tool error (exit `2`) — use one step instance per app.
+
+### `distribution` — store context the source tree cannot tell you
+
+Google Play policy rules depend on how the app is actually distributed, and
+that is not a property of the source. The same Gradle project can ship on Play,
+ship only through F-Droid or a private channel, or both, and nothing in the tree
+distinguishes those cases. It is a statement about your release process, so
+somebody has to state it.
+
+| Value | Means | Effect |
+|---|---|---|
+| `google_play` | the build is distributed through Google Play | Enables Play policy evaluation when the remaining required evidence is available |
+| `non_play` | the build is not distributed through Google Play | Play policy rules report not applicable |
+| *(empty)* | nothing is declared here | see below |
+
+Setting this input is the CI equivalent of committing an `appflight.play.json`.
+Use it when you would rather configure the value once in your workflow than
+carry a file in the repository; the step passes it to the CLI as
+`appflight check --distribution`, unchanged. The step does not interpret the
+value, and adds no default of its own.
+
+**Omitting it does not mean `google_play`.** The step sends no
+`--distribution` argument at all, and the CLI keeps its own behaviour: rules
+that need the distribution context report that they could not be fully
+evaluated, rather than assuming a store. A scan can therefore come back green
+on the rules it could run while leaving distribution-dependent rules
+unevaluated. That is deliberate — an unfounded assumption about where an app
+ships would produce a confident verdict nobody checked. Set the value, or read
+the coverage section of the report to see what was skipped.
+
+Android only. Supplying it with `platform: ios` is a configuration error and
+fails the step before anything is installed.
+
+If the repository already contains an `appflight.play.json`, this input wins
+and the report records the disagreement under `policyContextOverrides`, so a
+verdict never rests silently on a declaration that differs from the one in the
+repository.
+
+### `policy_context_file` — the rest of the policy context
+
+`policyContext` also carries `mode`, `formFactors`, `publishedRelease`,
+`privateDistribution` and `extensions`. Those refine a verdict rather than
+deciding whether a rule family runs at all, so they stay in a file instead of
+becoming one input each. Point this at a JSON file holding a `policyContext`
+object, relative to `project_path` or absolute; it is passed as
+`appflight check --policy-context`.
+
+Most workflows need neither this nor `distribution`, and a workflow that sets
+`distribution` usually does not need this as well. Reach for it only when you
+have one of those additional fields to declare.
 
 ### `appflight_version` — why pinning is deliberate
 
@@ -307,8 +384,10 @@ deterministic ruleset is unlimited and unaffected.
 |---|---|
 | `APPFLIGHT_FINDING_COUNT` | Total findings across all severities, including those below the threshold. `unknown` if the scan errored. |
 | `APPFLIGHT_REPORT_PATH` | Absolute path to the JSON report. |
+| `APPFLIGHT_EVALUATION_STATUS` | `complete`, `incomplete`, or `unknown`, independent of the severity gate. |
+| `APPFLIGHT_VERDICT` | `clear`, `findings`, `not_fully_evaluated`, or `unknown` when unavailable. |
 
-Both are exported before the step exits, including on a failing build, so a
+All are exported before the step exits, including on a failing build, so a
 notification step can read them.
 
 ---
@@ -325,6 +404,12 @@ The `1` / `2` split matters. On `2` no verdict was produced, so the compliance
 status is *unknown*, not clean. The step never collapses these into one message,
 and sets `APPFLIGHT_FINDING_COUNT=unknown` rather than `0`.
 
+Exit `0` means only that no observed finding meets the configured threshold.
+An incomplete or unknown analysis still passes that gate, but the step warns
+that it is not a clean result and more findings may exist. Zero observed
+findings never establish completeness. Observed findings remain valid and can
+fail the gate even when `verdict` is `not_fully_evaluated`.
+
 ---
 
 ## Usage
@@ -340,21 +425,21 @@ workflows:
           title: Appflight compliance check
           inputs:
             - project_path: "."
-            - appflight_version: "0.9.1"
+            - appflight_version: "0.11.0"
+            - platform: "ios"
             - fail_on: "critical"
             - deep: "false"
       - deploy-to-bitrise-io@2: {}
 ```
 
-Pin to a tag instead of `main` once you have reviewed a release:
+Pin to the reviewed `v0.3.0` step tag for iOS or Android. The existing `v0.2.4`
+tag remains unchanged and is iOS-only.
 
 ```yaml
-      - git::https://github.com/Azura2025/bitrise-step-appflight.git@v0.2.4:
+      - git::https://github.com/Azura2025/bitrise-step-appflight.git@v0.3.0:
 ```
 
-`v0.2.4` is the current tagged release and pins `appflight@0.9.1`. The step and
-its output/artifact handoff have been exercised successfully on hosted Bitrise
-hardware.
+Do not point a production Android gate at `main` or an unpublished npm version.
 
 ### Scheduled nightly build across several apps
 
@@ -367,14 +452,16 @@ workflows:
           title: Compliance — App One
           inputs:
             - project_path: "./AppOne"
-            - appflight_version: "0.9.1"
+            - appflight_version: "0.11.0"
+            - platform: "ios"
             - fail_on: "critical"
       - git::https://github.com/Azura2025/bitrise-step-appflight.git@main:
           title: Compliance — App Two
           is_always_run: true
           inputs:
             - project_path: "./AppTwo"
-            - appflight_version: "0.9.1"
+            - appflight_version: "0.11.0"
+            - platform: "ios"
             - fail_on: "critical"
       - deploy-to-bitrise-io@2: {}
 ```
@@ -390,7 +477,8 @@ Trigger it from Bitrise's scheduled builds (for example 02:00 daily).
       - git::https://github.com/Azura2025/bitrise-step-appflight.git@main:
           inputs:
             - project_path: "."
-            - appflight_version: "0.9.1"
+            - appflight_version: "0.11.0"
+            - platform: "ios"
             - fail_on: "warning"
             - deep: "true"
             - api_token: "$APPFLIGHT_API_TOKEN"   # a Bitrise secret
@@ -404,7 +492,8 @@ Not yet published. Once accepted, the same configuration becomes:
       - appflight-compliance-check@1:
           inputs:
             - project_path: "."
-            - appflight_version: "0.9.1"
+            - appflight_version: "0.11.0"
+            - platform: "ios"
             - fail_on: "critical"
 ```
 
@@ -424,10 +513,18 @@ Not yet published. Once accepted, the same configuration becomes:
 
 ## Report artifact and output contract
 
-This section inlines the complete contract relevant to the pinned
-`appflight@0.9.1` release. `appflight-report.json` uses contract version `1.3`.
+This section summarizes the contract relevant to the pinned
+`appflight@0.11.0` release. `appflight-report.json` uses contract
+version `1.9`.
 CI pipelines can rely on the exit codes and JSON semantics below; parsers must
 tolerate unknown additive fields.
+
+Schema 1.9 separates `verdict`/`evaluationStatus`/`scope` from the severity gate
+and from benchmark validation. Finding `rule.execution` and `rule.validation`,
+`summary.findingsByValidation`, and coverage metadata remain in the unchanged
+JSON artifact. An enabled but unvalidated finding still counts and can fail the
+severity gate. `benchmarkValidationComplete: false` alone does not determine
+analysis completeness. The step never calculates a readiness score.
 
 ### Exit codes
 
@@ -445,14 +542,17 @@ JSON output.
 ### JSON document
 
 With `--json`, stdout contains exactly one JSON document; diagnostics go to
-stderr. Evidence is extraction-redacted before it enters the report. A complete
-representative shape is:
+stderr. Evidence is extraction-redacted before it enters the report. A
+representative subset is:
 
 ```json
 {
-  "schemaVersion": "1.3",
-  "tool": { "name": "appflight", "version": "0.9.1" },
+  "schemaVersion": "1.9",
+  "verdict": "not_fully_evaluated",
+  "evaluationStatus": "incomplete",
+  "tool": { "name": "appflight", "version": "0.11.0" },
   "command": "check",
+  "platform": "ios",
   "root": "/path/to/app",
   "scannedAt": "2026-08-11T02:00:00.000Z",
   "durationMs": 42,
@@ -531,12 +631,18 @@ Field semantics:
 FAST=1 ./test/run-tests.sh   # reuse the appflight already on PATH
 ```
 
-47 assertions across 9 cases: clean project passes, a hardcoded-secret project
+Cases cover: a zero-observed-findings project passes, a hardcoded-secret project
 fails with exit 1, `fail_on: none` is report-only, `deep` without a token fails
 fast, invalid configuration is rejected before install, a CLI exit `2` is
 surfaced as a distinct tool error, and a missing `BITRISE_DEPLOY_DIR` degrades
 with a warning. The suite also asserts the fixture's live-looking secret never
 reaches the log or the artifact.
+
+Distribution cases cover both supported values, omission, invalid values, and
+the iOS guard. Schema 1.9 cases cover incomplete/unknown scope, zero and nonzero
+observed findings, legacy reports, and complete scope independently of benchmark
+validation metadata. Partial reports retain their observed finding counts and
+can pass only the finding threshold, without a clean-analysis claim.
 
 `APPFLIGHT_STEP_SKIP_INSTALL=true` exists for the test harness only. It is
 announced loudly in the log when set, because skipping the pinned install means
@@ -557,7 +663,10 @@ Verified so far:
   runner, including `envman` output export into a following step, artifact
   creation in `$BITRISE_DEPLOY_DIR`, the gate failing the build on a critical
   finding, and the fail-fast on `deep` without a token.
-- 47 assertions pass against the real published CLI (`appflight@0.9.1`).
+- The wrapper suite passes all 124 assertions against published
+  `appflight@0.11.0`, including full-mode pinned installs and schema 1.9 checks.
+- Hosted Bitrise validation of the new `v0.3.0` git-URL reference remains a
+  separate release check; earlier hosted results below concern the prior tag.
 - The self-test workflow passes on hosted Bitrise hardware, including the
   pinned global npm install, PATH resolution, `envman` output export, and
   `$BITRISE_DEPLOY_DIR` artifact handoff.
