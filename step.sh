@@ -290,9 +290,9 @@ if [ "$prove_billing" = "yes" ] && [ "$android_project" = "yes" ]; then
     if [ -n "$billing_closure_timeout_minutes" ]; then
       billing_args+=(--billing-closure-timeout "$billing_closure_timeout_minutes")
     fi
-    echo "    Billing proof: on — compiles the selected release build to verify Billing"
-    echo "                   classes (Google Play submission scope; limit ${billing_closure_timeout_minutes:-15} min"
-    echo "                   per pass). This two-pass wrapper runs that build twice."
+    echo "    Billing proof: on — when a Google Play release resolves Play Billing, the"
+    echo "                   selected release build is compiled to verify Billing classes"
+    echo "                   (limit ${billing_closure_timeout_minutes:-15} min per pass; this two-pass wrapper runs it twice)."
   else
     warn "prove_billing needs appflight ${PROVE_BILLING_MIN_VERSION}+ (pinned ${appflight_version}); Billing will not be verified."
   fi

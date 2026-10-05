@@ -603,7 +603,7 @@ rm -rf "$ws"
 
 billing_case "android, timeout 25" appflight_version="$PINNED_VERSION" platform="android" billing_closure_timeout_minutes="25"
 assert_eq 2 "$(grep -c -- "--prove-billing --billing-closure-timeout 25" "${ws}/args.log")" "timeout reaches both passes"
-assert_contains "$STEP_OUT" "limit 25 min" "the limit is disclosed"
+assert_contains "$STEP_OUT" "limit 25 min per pass" "the limit is disclosed"
 rm -rf "$ws"
 
 billing_case "android, opted out" appflight_version="$PINNED_VERSION" platform="android" prove_billing="no"
