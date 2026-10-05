@@ -15,7 +15,7 @@ set -uo pipefail
 readonly TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly REPO_DIR="$(cd "${TEST_DIR}/.." && pwd)"
 readonly STEP="${REPO_DIR}/step.sh"
-readonly PINNED_VERSION="0.11.0"
+readonly PINNED_VERSION="0.12.0"
 
 pass_count=0
 fail_count=0
@@ -284,7 +284,7 @@ mkdir -p "$stub_dir"
 cat >"${stub_dir}/appflight" <<'STUB'
 #!/usr/bin/env bash
 # Stands in for a CLI that cannot complete the scan.
-if [ "$1" = "version" ]; then echo "0.11.0"; exit 0; fi
+if [ "$1" = "version" ]; then echo "0.12.0"; exit 0; fi
 echo "appflight check: scan failed: simulated tool error" >&2
 exit 2
 STUB
@@ -314,7 +314,7 @@ stub_dir="${ws}/stub"
 mkdir -p "$stub_dir"
 cat >"${stub_dir}/appflight" <<'STUB'
 #!/usr/bin/env bash
-if [ "$1" = "version" ]; then echo "0.11.0"; exit 0; fi
+if [ "$1" = "version" ]; then echo "0.12.0"; exit 0; fi
 case " $* " in
   *" --deep "*)
     if [ "${APPFLIGHT_TOKEN:-}" != "header.payload.signature" ]; then
@@ -352,7 +352,7 @@ stub_dir="${ws}/stub"
 mkdir -p "$stub_dir"
 cat >"${stub_dir}/appflight" <<'STUB'
 #!/usr/bin/env bash
-if [ "$1" = "version" ]; then echo "0.11.0"; exit 0; fi
+if [ "$1" = "version" ]; then echo "0.12.0"; exit 0; fi
 printf '%s\n' "$*" >>"${APPFLIGHT_ARGS_LOG}"
 case " $* " in
   *" --json "*) printf '%s\n' '{"summary":{"total":0},"gate":{"triggered":false}}' ;;
@@ -399,7 +399,7 @@ for dist in google_play non_play; do
   mkdir -p "$stub_dir"
   cat >"${stub_dir}/appflight" <<'STUB'
 #!/usr/bin/env bash
-if [ "$1" = "version" ]; then echo "0.11.0"; exit 0; fi
+if [ "$1" = "version" ]; then echo "0.12.0"; exit 0; fi
 printf '%s\n' "$*" >>"${APPFLIGHT_ARGS_LOG}"
 case " $* " in
   *" --json "*) printf '%s\n' '{"summary":{"total":0},"gate":{"triggered":false}}' ;;
@@ -438,7 +438,7 @@ stub_dir="${ws}/stub"
 mkdir -p "$stub_dir"
 cat >"${stub_dir}/appflight" <<'STUB'
 #!/usr/bin/env bash
-if [ "$1" = "version" ]; then echo "0.11.0"; exit 0; fi
+if [ "$1" = "version" ]; then echo "0.12.0"; exit 0; fi
 printf '%s\n' "$*" >>"${APPFLIGHT_ARGS_LOG}"
 case " $* " in
   *" --json "*) printf '%s\n' '{"summary":{"total":0},"gate":{"triggered":false}}' ;;
@@ -496,7 +496,7 @@ disclosure_stub() {
   mkdir -p "$dir"
   cat >"${dir}/appflight" <<'STUB'
 #!/usr/bin/env bash
-if [ "$1" = "version" ]; then echo "0.11.0"; exit 0; fi
+if [ "$1" = "version" ]; then echo "0.12.0"; exit 0; fi
 case " $* " in
   *" --json "*) printf '%s\n' '{"summary":{"total":0},"gate":{"triggered":false}}' ;;
   *) echo "deterministic stub" ;;
@@ -567,6 +567,82 @@ assert_not_contains "$STEP_OUT" "Android project detected" "auto does not assert
 rm -rf "$ws"
 echo
 
+bold "6h. prove_billing reaches Android scans only, on a CLI that has the flag"
+# The CLI rejects --prove-billing for iOS (exit 2), so a default-on input must
+# never reach an iOS scan, and a pre-0.12.0 pin must not receive an unknown flag.
+billing_case() {
+  # $1 = description, remaining = extra env for the step
+  local what="$1"; shift
+  ws="$(make_workspace clean-app)"
+  mkdir -p "${ws}/stub"
+  cat >"${ws}/stub/appflight" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1" = "version" ]; then echo "0.12.0"; exit 0; fi
+printf '%s\n' "$*" >>"${APPFLIGHT_ARGS_LOG}"
+case " $* " in
+  *" --json "*) printf '%s\n' '{"summary":{"total":0},"gate":{"triggered":false}}' ;;
+  *) echo "deterministic stub" ;;
+esac
+exit 0
+STUB
+  chmod +x "${ws}/stub/appflight"
+  : >"${ws}/args.log"
+  run_step APPFLIGHT_STEP_SKIP_INSTALL=true APPFLIGHT_ARGS_LOG="${ws}/args.log" \
+    PATH="${ws}/stub:${PATH}" BITRISE_DEPLOY_DIR="${ws}/deploy" project_path="${ws}/app" \
+    fail_on="critical" deep="false" api_token="" "$@"
+  BILLING_ARGS="$(cat "${ws}/args.log")"
+  echo "    (${what})"
+}
+
+billing_case "android, default on" appflight_version="$PINNED_VERSION" platform="android"
+assert_eq 0 "$STEP_STATUS" "android default step exits 0"
+assert_eq 2 "$(grep -c -- "--prove-billing" "${ws}/args.log")" "--prove-billing reaches both passes by default"
+assert_not_contains "$BILLING_ARGS" "--billing-closure-timeout" "no timeout flag when the input is empty"
+assert_contains "$STEP_OUT" "Billing proof: on" "the compile is disclosed before it runs"
+rm -rf "$ws"
+
+billing_case "android, timeout 25" appflight_version="$PINNED_VERSION" platform="android" billing_closure_timeout_minutes="25"
+assert_eq 2 "$(grep -c -- "--prove-billing --billing-closure-timeout 25" "${ws}/args.log")" "timeout reaches both passes"
+assert_contains "$STEP_OUT" "limit 25 min" "the limit is disclosed"
+rm -rf "$ws"
+
+billing_case "android, opted out" appflight_version="$PINNED_VERSION" platform="android" prove_billing="no"
+assert_eq 0 "$STEP_STATUS" "opted-out step exits 0"
+assert_not_contains "$BILLING_ARGS" "--prove-billing" "prove_billing=no forwards nothing"
+rm -rf "$ws"
+
+billing_case "ios, default on" appflight_version="$PINNED_VERSION" platform="ios"
+assert_eq 0 "$STEP_STATUS" "platform=ios with default prove_billing exits 0"
+assert_not_contains "$BILLING_ARGS" "--prove-billing" "iOS never receives --prove-billing"
+assert_not_contains "$STEP_OUT" "Billing proof" "iOS build does not mention the Billing compile"
+rm -rf "$ws"
+
+billing_case "auto, no Gradle wrapper" appflight_version="$PINNED_VERSION" platform="auto"
+assert_not_contains "$BILLING_ARGS" "--prove-billing" "auto without gradlew forwards nothing"
+rm -rf "$ws"
+
+ws_auto="$(make_workspace clean-app)"; touch "${ws_auto}/app/gradlew"
+billing_case "auto, Gradle wrapper present" appflight_version="$PINNED_VERSION" platform="auto" project_path="${ws_auto}/app"
+assert_eq 2 "$(grep -c -- "--prove-billing" "${ws}/args.log")" "auto with gradlew forwards --prove-billing"
+rm -rf "$ws" "$ws_auto"
+
+billing_case "android, CLI pinned below 0.12.0" appflight_version="0.11.0" platform="android"
+assert_eq 0 "$STEP_STATUS" "old pin still runs"
+assert_not_contains "$BILLING_ARGS" "--prove-billing" "old pin never receives an unknown flag"
+assert_contains "$STEP_OUT" "prove_billing needs appflight 0.12.0+" "old pin is warned about"
+rm -rf "$ws"
+
+billing_case "invalid prove_billing" appflight_version="$PINNED_VERSION" platform="android" prove_billing="true"
+assert_eq 1 "$STEP_STATUS" "prove_billing=true is refused"
+assert_contains "$STEP_OUT" "prove_billing must be 'yes' or 'no'" "names the accepted values"
+rm -rf "$ws"
+
+billing_case "invalid timeout" appflight_version="$PINNED_VERSION" platform="android" billing_closure_timeout_minutes="15m"
+assert_eq 1 "$STEP_STATUS" "non-numeric timeout is refused"
+assert_contains "$STEP_OUT" "billing_closure_timeout_minutes must be a number" "explains the timeout format"
+rm -rf "$ws"
+echo
+
 bold "7. Missing BITRISE_DEPLOY_DIR degrades with a warning"
 ws="$(make_workspace clean-app)"
 pushd "$ws" >/dev/null
@@ -590,7 +666,7 @@ for scenario in partial-empty partial-findings unknown legacy complete; do
   mkdir -p "${ws}/stub"
   cat >"${ws}/stub/appflight" <<'STUB'
 #!/usr/bin/env bash
-if [ "$1" = "version" ]; then echo "0.11.0"; exit 0; fi
+if [ "$1" = "version" ]; then echo "0.12.0"; exit 0; fi
 case " $* " in
   *" --json "*)
     case "$SCOPE_SCENARIO" in

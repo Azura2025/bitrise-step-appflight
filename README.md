@@ -32,7 +32,7 @@ second pass is the authoritative one, because it is the pass that includes
 ## What runs where, and what leaves the machine
 
 This section inlines the data-boundary contract for the pinned
-`appflight@0.11.0` package. A reviewer does not need access to another repository
+`appflight@0.12.0` package. A reviewer does not need access to another repository
 or package URL to understand the step.
 
 ### Software installed on the build machine
@@ -223,7 +223,9 @@ on its own.
 | `allow_gradle_network` | `false` | yes | Removes Gradle `--offline`; does not create or remove an OS egress sandbox. |
 | `distribution` | *(empty)* | no | `google_play` \| `non_play`. Android only. Omitted makes no assumption. |
 | `policy_context_file` | *(empty)* | no | Android only. JSON `policyContext` for the fields that have no input. |
-| `appflight_version` | `0.11.0` | yes | Exact npm version. `latest` is rejected. |
+| `prove_billing` | `yes` | yes | Android only (ignored for iOS). Passes `--prove-billing`: compiles the release build to verify Play Billing classes. Needs `appflight_version` 0.12.0+. |
+| `billing_closure_timeout_minutes` | `15` | no | Limit for that compile, passed as `--billing-closure-timeout`. |
+| `appflight_version` | `0.12.0` | yes | Exact npm version. `latest` is rejected. |
 | `fail_on` | `critical` | yes | `critical` \| `warning` \| `suggestion` \| `none` |
 | `deep` | `false` | yes | `true` enables paid AI analysis and transmits the disclosed platform payload. |
 | `api_token` | *(empty)* | no | Token for `--deep`. Sensitive; use a Bitrise secret. |
@@ -279,9 +281,35 @@ becoming one input each. Point this at a JSON file holding a `policyContext`
 object, relative to `project_path` or absolute; it is passed as
 `appflight check --policy-context`.
 
-Most workflows need neither this nor `distribution`, and a workflow that sets
-`distribution` usually does not need this as well. Reach for it only when you
-have one of those additional fields to declare.
+Declare `formFactors` here (or in `appflight.play.json`) whenever the target
+API rule should be evaluated. `distribution: google_play` alone leaves it not
+fully evaluated with "Explicitly select policyContext.formFactors", because
+Appflight does not infer a phone release from the absence of TV, Wear, Auto or
+XR markers. A phone app on Play:
+
+```json
+{ "distribution": "google_play", "mode": "submission", "formFactors": ["phone"], "extensions": [] }
+```
+
+Save it as UTF-8 **without** a byte-order mark; the CLI rejects a BOM (exit 2).
+`test/fixtures/policy-context/google-play-phone.json` is this exact file.
+
+### `prove_billing` — the Play Billing deprecation check
+
+From `appflight@0.12.0`, the Billing Library deprecation rule reports only after
+proving, for the selected release, which Billing classes ship. That proof
+compiles the release build, so the CLI runs it only with `--prove-billing`. This
+input passes the flag by default on Android scans (`platform: android`, or
+`platform: auto` with a Gradle wrapper in `project_path`) and never on iOS,
+where the CLI would reject it. With `no`, or a pin below 0.12.0, Billing is
+reported as not fully evaluated rather than clear.
+
+The compile adds several minutes on a cold build, and this two-pass wrapper runs
+it in both passes, so place the step after the app's own Gradle build. A compile
+that exceeds `billing_closure_timeout_minutes` does not fail the step: the scan
+completes and Billing reads `billing_closure_timeout`. Gradle stays offline unless
+`allow_gradle_network` is `true`, so a cold worker without cached dependencies
+needs that input or a prior build.
 
 ### `appflight_version` — why pinning is deliberate
 
@@ -425,7 +453,7 @@ workflows:
           title: Appflight compliance check
           inputs:
             - project_path: "."
-            - appflight_version: "0.11.0"
+            - appflight_version: "0.12.0"
             - platform: "ios"
             - fail_on: "critical"
             - deep: "false"
@@ -452,7 +480,7 @@ workflows:
           title: Compliance — App One
           inputs:
             - project_path: "./AppOne"
-            - appflight_version: "0.11.0"
+            - appflight_version: "0.12.0"
             - platform: "ios"
             - fail_on: "critical"
       - git::https://github.com/Azura2025/bitrise-step-appflight.git@main:
@@ -460,7 +488,7 @@ workflows:
           is_always_run: true
           inputs:
             - project_path: "./AppTwo"
-            - appflight_version: "0.11.0"
+            - appflight_version: "0.12.0"
             - platform: "ios"
             - fail_on: "critical"
       - deploy-to-bitrise-io@2: {}
@@ -477,7 +505,7 @@ Trigger it from Bitrise's scheduled builds (for example 02:00 daily).
       - git::https://github.com/Azura2025/bitrise-step-appflight.git@main:
           inputs:
             - project_path: "."
-            - appflight_version: "0.11.0"
+            - appflight_version: "0.12.0"
             - platform: "ios"
             - fail_on: "warning"
             - deep: "true"
@@ -492,7 +520,7 @@ Not yet published. Once accepted, the same configuration becomes:
       - appflight-compliance-check@1:
           inputs:
             - project_path: "."
-            - appflight_version: "0.11.0"
+            - appflight_version: "0.12.0"
             - platform: "ios"
             - fail_on: "critical"
 ```
@@ -514,7 +542,7 @@ Not yet published. Once accepted, the same configuration becomes:
 ## Report artifact and output contract
 
 This section summarizes the contract relevant to the pinned
-`appflight@0.11.0` release. `appflight-report.json` uses contract
+`appflight@0.12.0` release. `appflight-report.json` uses contract
 version `1.9`.
 CI pipelines can rely on the exit codes and JSON semantics below; parsers must
 tolerate unknown additive fields.
@@ -550,7 +578,7 @@ representative subset is:
   "schemaVersion": "1.9",
   "verdict": "not_fully_evaluated",
   "evaluationStatus": "incomplete",
-  "tool": { "name": "appflight", "version": "0.11.0" },
+  "tool": { "name": "appflight", "version": "0.12.0" },
   "command": "check",
   "platform": "ios",
   "root": "/path/to/app",
@@ -639,7 +667,12 @@ with a warning. The suite also asserts the fixture's live-looking secret never
 reaches the log or the artifact.
 
 Distribution cases cover both supported values, omission, invalid values, and
-the iOS guard. Schema 1.9 cases cover incomplete/unknown scope, zero and nonzero
+the iOS guard. `prove_billing` cases cover the default on Android, the timeout,
+opt-out, iOS and `auto` without a Gradle wrapper (flag withheld), `auto` with a
+wrapper, a pre-0.12.0 pin (flag withheld with a warning), and invalid values.
+The hosted `test-prove-billing-retro` workflow runs the step on
+RetroMusicPlayer at a pinned revision and asserts the Billing CRITICAL with
+Billing coverage `evaluated`. Schema 1.9 cases cover incomplete/unknown scope, zero and nonzero
 observed findings, legacy reports, and complete scope independently of benchmark
 validation metadata. Partial reports retain their observed finding counts and
 can pass only the finding threshold, without a clean-analysis claim.
@@ -665,6 +698,8 @@ Verified so far:
   finding, and the fail-fast on `deep` without a token.
 - The wrapper suite passes all 124 assertions against published
   `appflight@0.11.0`, including full-mode pinned installs and schema 1.9 checks.
+- 0.4.0 draft (`prove_billing`): the stub suite passes 144 assertions locally
+  (`FAST=1`); full-mode and hosted runs wait for `appflight@0.12.0` on npm.
 - Hosted Bitrise validation of the new `v0.3.0` git-URL reference remains a
   separate release check; earlier hosted results below concern the prior tag.
 - The self-test workflow passes on hosted Bitrise hardware, including the

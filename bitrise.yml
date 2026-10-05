@@ -13,7 +13,7 @@ default_step_lib_source: https://github.com/bitrise-io/bitrise-steplib.git
 
 app:
   envs:
-    - APPFLIGHT_VERSION: 0.11.0
+    - APPFLIGHT_VERSION: 0.12.0
     # Free deterministic scanning needs no account. Leave telemetry off so a
     # CI self-test never emits usage events.
     - APPFLIGHT_TELEMETRY: "0"
@@ -132,6 +132,67 @@ workflows:
             - fail_on: critical
             - deep: "true"
             - api_token: ""
+
+  # Expected: PASSES. Hosted proof of --prove-billing on a real Play app.
+  # RetroMusicPlayer at a pinned revision resolves Play Billing 7.0.0 (deadline
+  # 2026-08-31). The step compiles the release build, proves the Billing
+  # classes, and must report the deprecation as CRITICAL with Billing coverage
+  # "evaluated". Report-only so the CRITICAL is asserted, not used as the gate.
+  # The policy context declares formFactors; without it target API stays not
+  # fully evaluated (Appflight never assumes a phone release).
+  test-prove-billing-retro:
+    envs:
+      - RETRO_REPOSITORY: https://github.com/RetroMusicPlayer/RetroMusicPlayer.git
+      - RETRO_REVISION: 09ddc3deb4646bb26c755ce1d3fd3587c9604f74
+      - RETRO_DIR: $BITRISE_SOURCE_DIR/_retro
+    steps:
+      - set-java-version@1:
+          inputs:
+            - set_java_version: "21"
+      - script:
+          title: Fetch RetroMusicPlayer at its pinned revision
+          inputs:
+            - content: |-
+                #!/usr/bin/env bash
+                set -euo pipefail
+                rm -rf "$RETRO_DIR"
+                git init -q "$RETRO_DIR"
+                git -C "$RETRO_DIR" fetch -q --depth 1 "$RETRO_REPOSITORY" "$RETRO_REVISION"
+                git -C "$RETRO_DIR" checkout -q --detach FETCH_HEAD
+                test "$(git -C "$RETRO_DIR" rev-parse HEAD)" = "$RETRO_REVISION"
+                chmod u+x "$RETRO_DIR/gradlew"
+      - path::./:
+          title: Appflight — Retro with --prove-billing (expect Billing CRITICAL)
+          inputs:
+            - project_path: $RETRO_DIR
+            - platform: android
+            - android_module: ":app"
+            - android_variant: normalRelease
+            - policy_context_file: $BITRISE_SOURCE_DIR/test/fixtures/policy-context/google-play-phone.json
+            - allow_gradle_network: "true"
+            - prove_billing: "yes"
+            - billing_closure_timeout_minutes: "30"
+            - appflight_version: $APPFLIGHT_VERSION
+            - fail_on: none
+            - deep: "false"
+      - script:
+          title: Assert the Billing CRITICAL and evaluated Billing coverage
+          inputs:
+            - content: |-
+                #!/usr/bin/env bash
+                set -euo pipefail
+                node -e '
+                  const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+                  const id = "android.billing_library_deprecation";
+                  const row = r.coverage?.rules?.[id];
+                  const hits = (r.findings || []).filter((f) => (f.rule?.id ?? f.id) === id && f.severity === "CRITICAL");
+                  console.log("billing coverage:", row?.status, row?.reasonCode);
+                  hits.forEach((f) => console.log("finding:", f.severity, f.title));
+                  if (row?.status !== "evaluated") { console.error("Billing coverage is not evaluated"); process.exit(1); }
+                  if (hits.length !== 1) { console.error("expected exactly one Billing CRITICAL"); process.exit(1); }
+                  console.log("OK — Billing proven and reported as CRITICAL");
+                ' "${APPFLIGHT_REPORT_PATH:?no report artifact}"
+      - deploy-to-bitrise-io@2: {}
 
   # The suite a reviewer should run first.
   test:

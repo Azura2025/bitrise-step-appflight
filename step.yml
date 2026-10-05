@@ -133,6 +133,13 @@ inputs:
 
         The remaining policy fields stay in the file, reachable through
         `policy_context_file`.
+
+        **Target API also needs `formFactors`.** `google_play` alone leaves the
+        target API rule not fully evaluated ("Explicitly select
+        policyContext.formFactors"), because Appflight does not assume a phone
+        release from the absence of TV, Wear, Auto or XR markers. Declare
+        `formFactors` (for example `["phone"]`) in `appflight.play.json` or in
+        `policy_context_file`.
       value_options:
         - ""
         - "google_play"
@@ -154,6 +161,37 @@ inputs:
         verdict and live here rather than becoming one input each.
       is_required: false
 
+  - prove_billing: "yes"
+    opts:
+      title: "Prove Play Billing classes"
+      summary: "Compiles the Android release build so the Billing deprecation check can run."
+      description: |-
+        Passes `appflight check --prove-billing` (appflight 0.12.0+). The CLI
+        compiles the selected release build and proves which Play Billing
+        classes ship before reporting the resolved Billing Library version
+        against Google's deadlines. Without it, Billing is reported as not fully
+        evaluated.
+
+        Applies only to Android scans: `platform: android`, or `platform: auto`
+        with a Gradle wrapper in `project_path`. iOS scans ignore it. The
+        compile adds build time (several minutes on a cold build), and this
+        two-pass step runs it twice. Run the step after the app's own Gradle
+        build so outputs are cached. Set `no` to skip the proof.
+      value_options:
+        - "yes"
+        - "no"
+      is_required: true
+
+  - billing_closure_timeout_minutes: "15"
+    opts:
+      title: "Billing proof time limit (minutes)"
+      summary: "Limit for the Billing proof compile, separate from the Gradle facts limit."
+      description: |-
+        Passed to `appflight check --billing-closure-timeout`. When the limit
+        fires the scan still completes and Billing is reported as not fully
+        evaluated with reason `billing_closure_timeout`; it is not a tool error.
+      is_required: false
+
   - allow_gradle_network: "false"
     opts:
       title: "Allow Gradle network resolution"
@@ -168,7 +206,7 @@ inputs:
         - "true"
       is_required: true
 
-  - appflight_version: "0.11.0"
+  - appflight_version: "0.12.0"
     opts:
       title: "Appflight CLI version"
       summary: "Exact npm version of the appflight CLI to install."

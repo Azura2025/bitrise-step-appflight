@@ -51,6 +51,14 @@ android_variant="${android_variant:-}"
 allow_gradle_network="${allow_gradle_network:-false}"
 distribution="${distribution:-}"
 policy_context_file="${policy_context_file:-}"
+prove_billing="${prove_billing:-yes}"
+billing_closure_timeout_minutes="${billing_closure_timeout_minutes:-}"
+
+# --prove-billing / --billing-closure-timeout exist from appflight 0.12.0.
+readonly PROVE_BILLING_MIN_VERSION="0.12.0"
+version_at_least() {
+  [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -1)" = "$2" ]
+}
 
 # ── Validation ───────────────────────────────────────────────────────────────
 # Every invalid configuration fails here, before anything is installed, so a
@@ -107,6 +115,19 @@ case "$distribution" in
     exit 1
     ;;
 esac
+
+case "$prove_billing" in
+  yes|no) ;;
+  *)
+    err "prove_billing must be 'yes' or 'no' (got '${prove_billing}')."
+    exit 1
+    ;;
+esac
+
+if [ -n "$billing_closure_timeout_minutes" ] && ! [[ "$billing_closure_timeout_minutes" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+  err "billing_closure_timeout_minutes must be a number of minutes (got '${billing_closure_timeout_minutes}')."
+  exit 1
+fi
 
 if [ "$platform" = "ios" ] && { [ -n "$android_module" ] || [ -n "$android_variant" ] || [ "$allow_gradle_network" = "true" ] || [ -n "$distribution" ] || [ -n "$policy_context_file" ]; }; then
   err "Android-only inputs android_module, android_variant, allow_gradle_network, distribution, and policy_context_file cannot be used with platform=ios."
@@ -242,6 +263,31 @@ if [ "$platform" != "ios" ]; then
   echo "                   Neither setting is an OS sandbox for build logic."
   echo "                   This two-pass wrapper evaluates that build logic twice."
 fi
+
+# Billing proof (--prove-billing) is Android-only: the CLI rejects it for an iOS
+# project, so a default-on input must never reach a non-Android scan.
+# platform=android is explicit; platform=auto counts as Android only when the
+# project path carries a Gradle wrapper. Anything else skips the flag silently.
+android_project="no"
+if [ "$platform" = "android" ]; then
+  android_project="yes"
+elif [ "$platform" = "auto" ] && { [ -f "${project_path}/gradlew" ] || [ -f "${project_path}/gradlew.bat" ]; }; then
+  android_project="yes"
+fi
+billing_args=()
+if [ "$prove_billing" = "yes" ] && [ "$android_project" = "yes" ]; then
+  if version_at_least "$appflight_version" "$PROVE_BILLING_MIN_VERSION"; then
+    billing_args+=(--prove-billing)
+    if [ -n "$billing_closure_timeout_minutes" ]; then
+      billing_args+=(--billing-closure-timeout "$billing_closure_timeout_minutes")
+    fi
+    echo "    Billing proof: on — compiles the selected release build to verify Billing"
+    echo "                   classes (Google Play submission scope; limit ${billing_closure_timeout_minutes:-15} min"
+    echo "                   per pass). This two-pass wrapper runs that build twice."
+  else
+    warn "prove_billing needs appflight ${PROVE_BILLING_MIN_VERSION}+ (pinned ${appflight_version}); Billing will not be verified."
+  fi
+fi
 echo "    report       : ${report_path}"
 
 # ── Pass 1: human-readable output for the build log ──────────────────────────
@@ -259,6 +305,7 @@ if [ -n "$android_variant" ]; then common_args+=(--variant "$android_variant"); 
 if [ "$allow_gradle_network" = "true" ]; then common_args+=(--allow-gradle-network); fi
 if [ -n "$distribution" ]; then common_args+=(--distribution "$distribution"); fi
 if [ -n "$policy_context_file" ]; then common_args+=(--policy-context "$policy_context_file"); fi
+if [ "${#billing_args[@]}" -gt 0 ]; then common_args+=("${billing_args[@]}"); fi
 
 set +e
 appflight "${common_args[@]}"
