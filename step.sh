@@ -53,8 +53,10 @@ distribution="${distribution:-}"
 policy_context_file="${policy_context_file:-}"
 prove_billing="${prove_billing:-yes}"
 billing_closure_timeout_minutes="${billing_closure_timeout_minutes:-}"
+form_factors="${form_factors:-}"
 
-# --prove-billing / --billing-closure-timeout exist from appflight 0.12.0.
+# --prove-billing, --billing-closure-timeout and --form-factors exist from
+# appflight 0.12.0.
 readonly PROVE_BILLING_MIN_VERSION="0.12.0"
 version_at_least() {
   [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -1)" = "$2" ]
@@ -129,8 +131,15 @@ if [ -n "$billing_closure_timeout_minutes" ] && ! [[ "$billing_closure_timeout_m
   exit 1
 fi
 
-if [ "$platform" = "ios" ] && { [ -n "$android_module" ] || [ -n "$android_variant" ] || [ "$allow_gradle_network" = "true" ] || [ -n "$distribution" ] || [ -n "$policy_context_file" ]; }; then
-  err "Android-only inputs android_module, android_variant, allow_gradle_network, distribution, and policy_context_file cannot be used with platform=ios."
+# Same values as policyContext.formFactors. The CLI validates again; checking
+# here only saves an install on a typo.
+if [ -n "$form_factors" ] && ! [[ "$form_factors" =~ ^(phone|wear|automotive|tv|xr)(,(phone|wear|automotive|tv|xr))*$ ]]; then
+  err "form_factors must be a comma-separated list of phone, wear, automotive, tv, xr with no spaces (got '${form_factors}')."
+  exit 1
+fi
+
+if [ "$platform" = "ios" ] && { [ -n "$android_module" ] || [ -n "$android_variant" ] || [ "$allow_gradle_network" = "true" ] || [ -n "$distribution" ] || [ -n "$form_factors" ] || [ -n "$policy_context_file" ]; }; then
+  err "Android-only inputs android_module, android_variant, allow_gradle_network, distribution, form_factors, and policy_context_file cannot be used with platform=ios."
   exit 1
 fi
 
@@ -264,10 +273,10 @@ if [ "$platform" != "ios" ]; then
   echo "                   This two-pass wrapper evaluates that build logic twice."
 fi
 
-# Billing proof (--prove-billing) is Android-only: the CLI rejects it for an iOS
-# project, so a default-on input must never reach a non-Android scan.
-# platform=android is explicit; platform=auto counts as Android only when the
-# project path carries a Gradle wrapper. Anything else skips the flag silently.
+# --prove-billing and --form-factors are Android-only: the CLI rejects them for
+# an iOS project, so they must never reach a non-Android scan. platform=android
+# is explicit; platform=auto counts as Android only when the project path carries
+# a Gradle wrapper. A pin below 0.12.0 does not know either flag.
 android_project="no"
 if [ "$platform" = "android" ]; then
   android_project="yes"
@@ -288,6 +297,17 @@ if [ "$prove_billing" = "yes" ] && [ "$android_project" = "yes" ]; then
     warn "prove_billing needs appflight ${PROVE_BILLING_MIN_VERSION}+ (pinned ${appflight_version}); Billing will not be verified."
   fi
 fi
+form_factor_args=()
+if [ -n "$form_factors" ]; then
+  if [ "$android_project" != "yes" ]; then
+    warn "form_factors is Android-only and no Gradle wrapper was found in project_path; it is not passed."
+  elif version_at_least "$appflight_version" "$PROVE_BILLING_MIN_VERSION"; then
+    form_factor_args+=(--form-factors "$form_factors")
+    echo "    form factors : ${form_factors}"
+  else
+    warn "form_factors needs appflight ${PROVE_BILLING_MIN_VERSION}+ (pinned ${appflight_version}); declare formFactors in policy_context_file instead."
+  fi
+fi
 echo "    report       : ${report_path}"
 
 # ── Pass 1: human-readable output for the build log ──────────────────────────
@@ -306,6 +326,7 @@ if [ "$allow_gradle_network" = "true" ]; then common_args+=(--allow-gradle-netwo
 if [ -n "$distribution" ]; then common_args+=(--distribution "$distribution"); fi
 if [ -n "$policy_context_file" ]; then common_args+=(--policy-context "$policy_context_file"); fi
 if [ "${#billing_args[@]}" -gt 0 ]; then common_args+=("${billing_args[@]}"); fi
+if [ "${#form_factor_args[@]}" -gt 0 ]; then common_args+=("${form_factor_args[@]}"); fi
 
 set +e
 appflight "${common_args[@]}"

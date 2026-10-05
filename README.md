@@ -223,6 +223,7 @@ on its own.
 | `allow_gradle_network` | `false` | yes | Removes Gradle `--offline`; does not create or remove an OS egress sandbox. |
 | `distribution` | *(empty)* | no | `google_play` \| `non_play`. Android only. Omitted makes no assumption. |
 | `policy_context_file` | *(empty)* | no | Android only. JSON `policyContext` for the fields that have no input. |
+| `form_factors` | *(empty)* | no | Android only. Comma-separated `phone`, `wear`, `automotive`, `tv`, `xr`; passed as `--form-factors` (0.12.0+). Never assumed. |
 | `prove_billing` | `yes` | yes | Android only (ignored for iOS). Passes `--prove-billing`: compiles the release build to verify Play Billing classes. Needs `appflight_version` 0.12.0+. |
 | `billing_closure_timeout_minutes` | `15` | no | Limit for that compile, passed as `--billing-closure-timeout`. |
 | `appflight_version` | `0.12.0` | yes | Exact npm version. `latest` is rejected. |
@@ -281,18 +282,13 @@ becoming one input each. Point this at a JSON file holding a `policyContext`
 object, relative to `project_path` or absolute; it is passed as
 `appflight check --policy-context`.
 
-Declare `formFactors` here (or in `appflight.play.json`) whenever the target
-API rule should be evaluated. `distribution: google_play` alone leaves it not
-fully evaluated with "Explicitly select policyContext.formFactors", because
-Appflight does not infer a phone release from the absence of TV, Wear, Auto or
-XR markers. A phone app on Play:
-
-```json
-{ "distribution": "google_play", "mode": "submission", "formFactors": ["phone"], "extensions": [] }
-```
-
-Save it as UTF-8 **without** a byte-order mark; the CLI rejects a BOM (exit 2).
-`test/fixtures/policy-context/google-play-phone.json` is this exact file.
+Target API is evaluated only when form factors are declared:
+`distribution: google_play` alone leaves it not fully evaluated with "Explicitly
+select policyContext.formFactors", because Appflight does not infer a phone
+release from the absence of TV, Wear, Auto or XR markers. Set the `form_factors`
+input (appflight 0.12.0+), or declare `formFactors` here or in
+`appflight.play.json`. When both are set, `form_factors` (like `distribution`)
+wins and the report records the override under `policyContextOverrides`.
 
 ### `prove_billing` — the Play Billing deprecation check
 
@@ -672,7 +668,12 @@ opt-out, iOS and `auto` without a Gradle wrapper (flag withheld), `auto` with a
 wrapper, a pre-0.12.0 pin (flag withheld with a warning), and invalid values.
 The hosted `test-prove-billing-retro` workflow runs the step on
 RetroMusicPlayer at a pinned revision and asserts the Billing CRITICAL with
-Billing coverage `evaluated`. Schema 1.9 cases cover incomplete/unknown scope, zero and nonzero
+Billing coverage `evaluated`. `form_factors` cases cover both passes, omission (never
+assumed), the iOS guard, `auto` without a wrapper, a pre-0.12.0 pin, and invalid
+lists. The hosted `verify-appflight-ios` (IceCubesApp) and
+`verify-appflight-android` (LibreTorrent, `form_factors: phone`) workflows
+carry over the 0.3.0 release checks; the Android one asserts
+`coverage.rules["android.target_api"].status`, not the overall verdict. Schema 1.9 cases cover incomplete/unknown scope, zero and nonzero
 observed findings, legacy reports, and complete scope independently of benchmark
 validation metadata. Partial reports retain their observed finding counts and
 can pass only the finding threshold, without a clean-analysis claim.
@@ -698,7 +699,7 @@ Verified so far:
   finding, and the fail-fast on `deep` without a token.
 - The wrapper suite passes all 124 assertions against published
   `appflight@0.11.0`, including full-mode pinned installs and schema 1.9 checks.
-- 0.4.0 draft (`prove_billing`): the stub suite passes 144 assertions locally
+- 0.4.0 draft (`prove_billing`): the stub suite passes 159 assertions locally
   (`FAST=1`); full-mode and hosted runs wait for `appflight@0.12.0` on npm.
 - Hosted Bitrise validation of the new `v0.3.0` git-URL reference remains a
   separate release check; earlier hosted results below concern the prior tag.

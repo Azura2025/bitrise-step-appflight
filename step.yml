@@ -134,16 +134,31 @@ inputs:
         The remaining policy fields stay in the file, reachable through
         `policy_context_file`.
 
-        **Target API also needs `formFactors`.** `google_play` alone leaves the
+        **Target API also needs form factors.** `google_play` alone leaves the
         target API rule not fully evaluated ("Explicitly select
         policyContext.formFactors"), because Appflight does not assume a phone
-        release from the absence of TV, Wear, Auto or XR markers. Declare
-        `formFactors` (for example `["phone"]`) in `appflight.play.json` or in
-        `policy_context_file`.
+        release from the absence of TV, Wear, Auto or XR markers. Set the
+        `form_factors` input, or declare `formFactors` in `appflight.play.json`
+        or `policy_context_file`.
       value_options:
         - ""
         - "google_play"
         - "non_play"
+      is_required: false
+
+  - form_factors: ""
+    opts:
+      title: "Play form factors"
+      summary: "Comma-separated form factors this release ships to, for example phone or phone,wear."
+      description: |-
+        Passed as `appflight check --form-factors` (appflight 0.12.0+, Android
+        only). Allowed values: `phone`, `wear`, `automotive`, `tv`, `xr`, comma
+        separated without spaces. Target API is evaluated only when form factors
+        are declared; Appflight never assumes one.
+
+        Leave empty to use `formFactors` from `appflight.play.json` or
+        `policy_context_file`. When both are set this input wins and the report
+        records the override under `policyContextOverrides`.
       is_required: false
 
   - policy_context_file: ""

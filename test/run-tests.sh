@@ -643,6 +643,39 @@ assert_contains "$STEP_OUT" "billing_closure_timeout_minutes must be a number" "
 rm -rf "$ws"
 echo
 
+bold "6i. form_factors reaches Android scans only, on a CLI that has the flag"
+billing_case "android, phone,wear" appflight_version="$PINNED_VERSION" platform="android" form_factors="phone,wear"
+assert_eq 0 "$STEP_STATUS" "form_factors step exits 0"
+assert_eq 2 "$(grep -c -- "--form-factors phone,wear" "${ws}/args.log")" "form_factors reaches both passes"
+rm -rf "$ws"
+
+billing_case "android, empty" appflight_version="$PINNED_VERSION" platform="android"
+assert_not_contains "$BILLING_ARGS" "--form-factors" "empty form_factors forwards nothing (never assumed)"
+rm -rf "$ws"
+
+billing_case "ios" appflight_version="$PINNED_VERSION" platform="ios" form_factors="phone"
+assert_eq 1 "$STEP_STATUS" "form_factors with platform=ios exits 1"
+assert_contains "$STEP_OUT" "Android-only" "rejects form_factors on iOS"
+rm -rf "$ws"
+
+billing_case "auto, no Gradle wrapper" appflight_version="$PINNED_VERSION" platform="auto" form_factors="phone"
+assert_not_contains "$BILLING_ARGS" "--form-factors" "auto without gradlew withholds form_factors"
+assert_contains "$STEP_OUT" "form_factors is Android-only" "and says why"
+rm -rf "$ws"
+
+billing_case "android, CLI pinned below 0.12.0" appflight_version="0.11.0" platform="android" form_factors="phone"
+assert_not_contains "$BILLING_ARGS" "--form-factors" "old pin never receives --form-factors"
+assert_contains "$STEP_OUT" "declare formFactors in policy_context_file instead" "old pin points at the file"
+rm -rf "$ws"
+
+for bad in "watch" "phone, wear" "phone,"; do
+  billing_case "invalid '${bad}'" appflight_version="$PINNED_VERSION" platform="android" form_factors="$bad"
+  assert_eq 1 "$STEP_STATUS" "form_factors='${bad}' is refused"
+  assert_contains "$STEP_OUT" "form_factors must be a comma-separated list" "names the accepted values for '${bad}'"
+  rm -rf "$ws"
+done
+echo
+
 bold "7. Missing BITRISE_DEPLOY_DIR degrades with a warning"
 ws="$(make_workspace clean-app)"
 pushd "$ws" >/dev/null

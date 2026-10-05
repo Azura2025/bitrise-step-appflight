@@ -138,8 +138,8 @@ workflows:
   # 2026-08-31). The step compiles the release build, proves the Billing
   # classes, and must report the deprecation as CRITICAL with Billing coverage
   # "evaluated". Report-only so the CRITICAL is asserted, not used as the gate.
-  # The policy context declares formFactors; without it target API stays not
-  # fully evaluated (Appflight never assumes a phone release).
+  # form_factors is required for target API to be evaluated (Appflight never
+  # assumes a phone release); mode defaults to submission.
   test-prove-billing-retro:
     envs:
       - RETRO_REPOSITORY: https://github.com/RetroMusicPlayer/RetroMusicPlayer.git
@@ -168,7 +168,8 @@ workflows:
             - platform: android
             - android_module: ":app"
             - android_variant: normalRelease
-            - policy_context_file: $BITRISE_SOURCE_DIR/test/fixtures/policy-context/google-play-phone.json
+            - distribution: google_play
+            - form_factors: phone
             - allow_gradle_network: "true"
             - prove_billing: "yes"
             - billing_closure_timeout_minutes: "30"
@@ -193,6 +194,142 @@ workflows:
                   console.log("OK — Billing proven and reported as CRITICAL");
                 ' "${APPFLIGHT_REPORT_PATH:?no report artifact}"
       - deploy-to-bitrise-io@2: {}
+
+  # Hosted verification carried over from the 0.3.0 release checks
+  # (dist/release-handoff/bitrise-0.3.0-hosted-tests.yml in AppScan), updated
+  # for 0.4.0: this branch's step, the pinned CLI from APPFLIGHT_VERSION, and
+  # form factors through the form_factors input instead of a policy file.
+  # Both expect the step to FAIL the build on a CRITICAL; the always-run
+  # verification step is what proves the expected finding.
+  verify-appflight-ios:
+    steps:
+      - nvm@1:
+          inputs:
+            - node_version: "22.23.1"
+      - script@1:
+          title: Clone pinned IceCubesApp
+          inputs:
+            - content: |-
+                #!/usr/bin/env bash
+                set -euo pipefail
+                project_dir="$(mktemp -d)/IceCubesApp"
+                git init "$project_dir"
+                git -C "$project_dir" remote add origin https://github.com/Dimillian/IceCubesApp.git
+                git -C "$project_dir" fetch --depth 1 origin 9c05a720597b3ff13de2e241bf58d3fba0863c09
+                git -C "$project_dir" checkout --detach FETCH_HEAD
+                test "$(git -C "$project_dir" rev-parse HEAD)" = 9c05a720597b3ff13de2e241bf58d3fba0863c09
+                envman add --key APPFLIGHT_TEST_PROJECT --value "$project_dir"
+      - path::./:
+          title: IceCubesApp — expect CRITICAL gate failure
+          inputs:
+            - project_path: "$APPFLIGHT_TEST_PROJECT"
+            - platform: "ios"
+            - appflight_version: $APPFLIGHT_VERSION
+            - fail_on: "critical"
+            - deep: "false"
+            - api_token: ""
+      - script@1:
+          title: Verify expected iOS finding despite incomplete analysis
+          is_always_run: true
+          inputs:
+            - content: |-
+                #!/usr/bin/env bash
+                set -euo pipefail
+                node <<'NODE'
+                const assert = require('node:assert/strict');
+                const fs = require('node:fs');
+                const r = JSON.parse(fs.readFileSync(process.env.APPFLIGHT_REPORT_PATH, 'utf8'));
+                assert.equal(r.tool.version, process.env.APPFLIGHT_VERSION);
+                assert.equal(r.schemaVersion, '1.9');
+                assert.equal(r.platform, 'ios');
+                assert.equal(r.gate.triggered, true);
+                assert.ok(r.findings.some(f => f.id === 'code_required_reason_apis_undeclared' && f.severity === 'CRITICAL'));
+                assert.equal(r.verdict, 'not_fully_evaluated');
+                assert.notEqual(process.env.APPFLIGHT_EVALUATION_STATUS, 'complete');
+                assert.equal(process.env.APPFLIGHT_VERDICT, r.verdict);
+                console.log('EXPECTED IOS POSITIVE VERIFIED: code_required_reason_apis_undeclared CRITICAL; incomplete analysis retained.');
+                NODE
+      - deploy-to-bitrise-io@2:
+          is_always_run: true
+
+  verify-appflight-android:
+    meta:
+      bitrise.io:
+        stack: ubuntu-noble-24.04-bitrise-2025-android
+    envs:
+      - APPFLIGHT_GRADLE_TIMEOUT_MS: "1200000"
+    steps:
+      - nvm@1:
+          inputs:
+            - node_version: "22.23.1"
+      - set-java-version@1:
+          inputs:
+            - set_java_version: "17"
+      - script@1:
+          title: Verify JDK/SDK and clone pinned LibreTorrent
+          inputs:
+            - content: |-
+                #!/usr/bin/env bash
+                set -euo pipefail
+                java -version
+                javac -version
+                test -x "${JAVA_HOME:?JAVA_HOME must point to a JDK}/bin/javac"
+                test -d "${ANDROID_HOME:-${ANDROID_SDK_ROOT:?Android SDK is required}}"
+                sdkmanager "platforms;android-36" "build-tools;36.0.0"
+                project_dir="$(mktemp -d)/LibreTorrent"
+                git init "$project_dir"
+                git -C "$project_dir" remote add origin https://github.com/proninyaroslav/libretorrent.git
+                git -C "$project_dir" fetch --depth 1 origin ae96f20b9852d2140fd704a3f2451ed7679e35a0
+                git -C "$project_dir" checkout --detach FETCH_HEAD
+                test "$(git -C "$project_dir" rev-parse HEAD)" = ae96f20b9852d2140fd704a3f2451ed7679e35a0
+                git -C "$project_dir" submodule update --init --recursive
+                chmod +x "$project_dir/gradlew"
+                envman add --key APPFLIGHT_TEST_PROJECT --value "$project_dir"
+      - path::./:
+          title: LibreTorrent — expect target API gate failure
+          inputs:
+            - project_path: "$APPFLIGHT_TEST_PROJECT"
+            - platform: "android"
+            - android_module: ":app"
+            - android_variant: "playRelease"
+            - distribution: "google_play"
+            - form_factors: "phone"
+            - allow_gradle_network: "true"
+            - appflight_version: $APPFLIGHT_VERSION
+            - fail_on: "critical"
+            - deep: "false"
+            - api_token: ""
+      - script@1:
+          title: Verify target API actually evaluated and fired
+          is_always_run: true
+          inputs:
+            - content: |-
+                #!/usr/bin/env bash
+                set -euo pipefail
+                node <<'NODE'
+                const assert = require('node:assert/strict');
+                const fs = require('node:fs');
+                const r = JSON.parse(fs.readFileSync(process.env.APPFLIGHT_REPORT_PATH, 'utf8'));
+                assert.equal(r.tool.version, process.env.APPFLIGHT_VERSION);
+                assert.equal(r.schemaVersion, '1.9');
+                assert.equal(r.platform, 'android');
+                assert.equal(r.gate.triggered, true);
+                // The rule row, not the overall verdict: Android reports are always
+                // not_fully_evaluated because only part of the tree is scanned.
+                const rule = r.coverage.rules['android.target_api'];
+                assert.equal(rule.status, 'evaluated');
+                assert.equal(rule.reasonCode, 'evidence_available');
+                assert.equal(rule.result, 'findings');
+                assert.equal(rule.distribution, 'google_play');
+                assert.equal(rule.release.module, ':app');
+                assert.equal(rule.release.variant, 'playRelease');
+                assert.ok(rule.assessments.some(a => a.surface === 'phone' && a.status === 'evaluated' && a.actual === 35 && a.required === 36 && a.result === 'findings'));
+                assert.ok(r.findings.some(f => f.id === 'android.target_api' && f.severity === 'CRITICAL'));
+                console.log('TARGET API VERIFIED: evaluated / evidence_available; :app:playRelease targets 35, requires 36; CRITICAL.');
+                console.log('Overall analysis verdict:', r.verdict, '(independent of target-API rule evaluation)');
+                NODE
+      - deploy-to-bitrise-io@2:
+          is_always_run: true
 
   # The suite a reviewer should run first.
   test:
