@@ -456,11 +456,11 @@ workflows:
       - deploy-to-bitrise-io@2: {}
 ```
 
-Pin to the reviewed `v0.3.0` step tag for iOS or Android. The existing `v0.2.4`
+Pin to the reviewed `v0.4.1` step tag for iOS or Android. The existing `v0.2.4`
 tag remains unchanged and is iOS-only.
 
 ```yaml
-      - git::https://github.com/Azura2025/bitrise-step-appflight.git@v0.3.0:
+      - git::https://github.com/Azura2025/bitrise-step-appflight.git@v0.4.1:
 ```
 
 Do not point a production Android gate at `main` or an unpublished npm version.
@@ -687,22 +687,26 @@ it on a real build.
 
 ## Status
 
-Not yet submitted to the Bitrise marketplace. Use the `git::` form above,
-which works today and needs no marketplace listing.
+The Bitrise marketplace lists 0.2.4 (iOS only). 0.4.1 is the first version
+prepared for submission with Android support; until it is listed, use the
+`git::` form above.
 
 Verified so far:
 
-- `stepman audit --step-yml ./step.yml` passes.
+- `bitrise share create` (Bitrise CLI 3.1.0) validates this `step.yml`. 0.3.0
+  and 0.4.0 failed that check because `distribution` listed an empty
+  `value_options` entry as its default; 0.4.1 makes it a plain text input with
+  the same accepted values.
 - All four workflows in `bitrise.yml` behave correctly under the Bitrise CLI
   runner, including `envman` output export into a following step, artifact
   creation in `$BITRISE_DEPLOY_DIR`, the gate failing the build on a critical
   finding, and the fail-fast on `deep` without a token.
 - The wrapper suite passes all 124 assertions against published
   `appflight@0.11.0`, including full-mode pinned installs and schema 1.9 checks.
-- 0.4.0 draft (`prove_billing`): the stub suite passes 159 assertions locally
-  (`FAST=1`); full-mode and hosted runs wait for `appflight@0.12.0` on npm.
-- Hosted Bitrise validation of the new `v0.3.0` git-URL reference remains a
-  separate release check; earlier hosted results below concern the prior tag.
+- 0.4.x: the wrapper suite passes 159 assertions with published
+  `appflight@0.12.0` on PATH. Hosted runs of `verify-appflight-ios`,
+  `verify-appflight-android` and `test-prove-billing-retro` are pending; the
+  Android and Retro workflows pass when run locally through `step.sh`.
 - The self-test workflow passes on hosted Bitrise hardware, including the
   pinned global npm install, PATH resolution, `envman` output export, and
   `$BITRISE_DEPLOY_DIR` artifact handoff.

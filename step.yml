@@ -140,10 +140,9 @@ inputs:
         release from the absence of TV, Wear, Auto or XR markers. Set the
         `form_factors` input, or declare `formFactors` in `appflight.play.json`
         or `policy_context_file`.
-      value_options:
-        - ""
-        - "google_play"
-        - "non_play"
+
+        Accepted values: `google_play`, `non_play`, or empty. Any other value
+        fails the step before anything is installed.
       is_required: false
 
   - form_factors: ""
