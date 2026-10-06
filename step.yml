@@ -2,7 +2,8 @@ title: |-
   Check App Store and Google Play Compliance with Appflight
 summary: |-
   Scans an iOS or Android project for store review risks before submission, writes a
-  JSON report as a build artifact, and fails the build on findings.
+  JSON report as a build artifact, and fails the build on findings at or above a
+  severity threshold.
 description: |-
   Runs the [Appflight CLI](https://www.npmjs.com/package/appflight) against an
   iOS or Android project and gates the build on App Store or Google Play review risks.
@@ -13,19 +14,28 @@ description: |-
 
   ### What the checks cover
 
-  Privacy manifests (`PrivacyInfo.xcprivacy`), Required Reason APIs,
-  `NSUsageDescription` permission-string quality, ATT, App Transport Security,
-  background modes, third-party SDK risk, in-app purchase restore requirements,
-  hardcoded secrets, private API usage, and other App Store review rules.
+  iOS (rules enabled in appflight 0.12.0): privacy manifests
+  (`PrivacyInfo.xcprivacy`) and Required Reason APIs, `NSUsageDescription`
+  permission strings and API/permission mismatches, App Tracking Transparency,
+  tracking SDKs versus the privacy manifest's tracking declaration, App
+  Transport Security and insecure HTTP URLs, deprecated `UIWebView`, export
+  compliance, in-app purchase restore, hardcoded secrets, credentials and IP
+  addresses, dynamic code execution, references to other platforms, and
+  placeholder text. Private API usage is not checked in this release.
 
-  Android uses an isolated rule engine covering target API, restricted
-  permissions, Data Safety versus resolved SDKs, cleartext traffic, release
-  debug/test flags, and placeholder resources.
+  Android uses an isolated rule engine. Enabled in appflight 0.12.0: target API
+  level against Google Play's deadlines, Play Billing Library deprecation (see
+  `prove_billing`), restricted-permission declaration reminders, cleartext
+  traffic, and release debug/test flags. Data Safety and placeholder-resource
+  checks are not enabled in this release.
 
   ### Data boundary
 
-  The default (free) deterministic scan runs entirely on the build machine and
-  sends **no source code or project data to Appflight**. Android scans execute
+  The default (free) deterministic scan analyzes the project on the build
+  machine and sends **no source code or project data to Appflight**. By
+  default the CLI does send one anonymous, code-free usage event per invocation
+  (a random install ID, the finding count, the ruleset version and the
+  command); set `APPFLIGHT_TELEMETRY=0` to turn it off. Android scans execute
   the repository Gradle wrapper and trusted build logic with the worker's OS
   permissions; Appflight does not add an OS sandbox. Gradle is offline by
   default, but host egress policy is required to block arbitrary build logic.
@@ -45,6 +55,10 @@ description: |-
   - `1` — findings at or above the threshold; **build fails** (the gate working).
   - `2` — tool or usage error; **build fails** with a distinct message so a
     broken invocation is never silently read as "clean".
+
+  A passing build means only that no finding met the threshold. Whether the
+  analysis was complete is reported separately in `APPFLIGHT_EVALUATION_STATUS`;
+  Android analysis is currently always reported as incomplete.
 
 website: https://github.com/Azura2025/bitrise-step-appflight
 source_code_url: https://github.com/Azura2025/bitrise-step-appflight
@@ -134,12 +148,12 @@ inputs:
         The remaining policy fields stay in the file, reachable through
         `policy_context_file`.
 
-        **Target API also needs form factors.** `google_play` alone leaves the
-        target API rule not fully evaluated ("Explicitly select
-        policyContext.formFactors"), because Appflight does not assume a phone
-        release from the absence of TV, Wear, Auto or XR markers. Set the
-        `form_factors` input, or declare `formFactors` in `appflight.play.json`
-        or `policy_context_file`.
+        **Target API also needs form factors.** Unless the merged release
+        manifest requires a TV, Wear, Automotive or XR hardware feature,
+        `google_play` alone leaves the target API rule not fully evaluated
+        ("Explicitly select policyContext.formFactors"): Appflight never assumes
+        a phone release. Set the `form_factors` input, or declare `formFactors`
+        in `appflight.play.json` or `policy_context_file`.
 
         Accepted values: `google_play`, `non_play`, or empty. Any other value
         fails the step before anything is installed.
@@ -152,8 +166,13 @@ inputs:
       description: |-
         Passed as `appflight check --form-factors` (appflight 0.12.0+, Android
         only). Allowed values: `phone`, `wear`, `automotive`, `tv`, `xr`, comma
-        separated without spaces. Target API is evaluated only when form factors
-        are declared; Appflight never assumes one.
+        separated without spaces.
+
+        Without declared form factors, target API is evaluated only when the
+        merged release manifest requires a TV, Wear, Automotive or XR hardware
+        feature; a phone release is never assumed. A value that contradicts a
+        required manifest feature leaves target API not fully evaluated
+        (`form_factor_conflict`).
 
         Leave empty to use `formFactors` from `appflight.play.json` or
         `policy_context_file`. When both are set this input wins and the report
@@ -165,32 +184,44 @@ inputs:
       title: "Policy context file"
       summary: "Optional path to a JSON policyContext, for the fields that have no input."
       description: |-
-        Path to a JSON file holding a `policyContext` object (`mode`,
-        `formFactors`, `publishedRelease`, `privateDistribution`,
-        `extensions`), relative to the project path or absolute. Passed to
-        `appflight check --policy-context`.
+        Path to a JSON file holding a `policyContext` object (`distribution`,
+        `mode`, `formFactors`, `publishedRelease`, `privateDistribution`,
+        `extensions`). Passed to `appflight check --policy-context`.
 
-        Only `distribution` has an input of its own, because it is the field
-        that decides whether the Play rules run at all. The rest refine a
-        verdict and live here rather than becoming one input each.
+        A relative path is resolved from the Android project root the CLI
+        selects: `project_path` itself, or its `android/` directory when
+        `project_path` is a React Native or Flutter repository. An absolute
+        path such as `$BITRISE_SOURCE_DIR/ci/policy-context.json` avoids the
+        ambiguity.
+
+        `distribution` and `form_factors` have inputs of their own; the other
+        fields live here. When an input and this file set the same field, the
+        input wins and the report records the override.
       is_required: false
 
   - prove_billing: "yes"
     opts:
       title: "Prove Play Billing classes"
-      summary: "Compiles the Android release build so the Billing deprecation check can run."
+      summary: "Proves which Play Billing classes ship; compiles the release build only for Google Play releases that resolve Play Billing."
       description: |-
-        Passes `appflight check --prove-billing` (appflight 0.12.0+). The CLI
-        compiles the selected release build and proves which Play Billing
-        classes ship before reporting the resolved Billing Library version
-        against Google's deadlines. Without it, Billing is reported as not fully
-        evaluated.
+        Passes `appflight check --prove-billing` (appflight 0.12.0+). For a
+        Google Play submission release that resolves the Play Billing Library,
+        the CLI compiles the selected release build and proves which Billing
+        classes ship before reporting the resolved Billing version against
+        Google's deadlines. Apps that do not resolve Play Billing, and releases
+        not declared for Google Play, compile nothing extra.
+
+        Without the flag, a Google Play release that resolves Play Billing
+        reports Billing as not fully evaluated. An app without Play Billing
+        reads not applicable either way, provided its runtime dependency graph
+        resolves completely.
 
         Applies only to Android scans: `platform: android`, or `platform: auto`
-        with a Gradle wrapper in `project_path`. iOS scans ignore it. The
-        compile adds build time (several minutes on a cold build), and this
-        two-pass step runs it twice. Run the step after the app's own Gradle
-        build so outputs are cached. Set `no` to skip the proof.
+        with a Gradle wrapper in `project_path`. iOS scans never receive the
+        flag, and neither does a pin below 0.12.0. When the compile runs it adds
+        build time (several minutes on a cold build), and this two-pass step
+        runs it in both passes; run the step after the app's own Gradle build
+        so outputs are cached. Set `no` to skip the proof.
       value_options:
         - "yes"
         - "no"
@@ -201,9 +232,12 @@ inputs:
       title: "Billing proof time limit (minutes)"
       summary: "Limit for the Billing proof compile, separate from the Gradle facts limit."
       description: |-
-        Passed to `appflight check --billing-closure-timeout`. When the limit
-        fires the scan still completes and Billing is reported as not fully
-        evaluated with reason `billing_closure_timeout`; it is not a tool error.
+        Passed to `appflight check --billing-closure-timeout`, in minutes
+        (more than 0 and at most 1440; the CLI rejects other values as a usage
+        error, exit `2`). The limit applies to the compile in each pass and is
+        separate from the CLI's five-minute Gradle facts limit. When it fires
+        the scan still completes and Billing is reported as not fully evaluated
+        with a `billing_closure_timeout` reason; it is not a tool error.
       is_required: false
 
   - allow_gradle_network: "false"
@@ -231,14 +265,15 @@ inputs:
         reproducible for a reviewed version.
 
         **Pinning is deliberate.** This input intentionally does not accept or
-        default to `latest`. A compliance gate must be reproducible: the same
-        commit scanned on two different days has to produce the same verdict,
-        and a rule added upstream must never turn a green nightly build red
-        without a reviewed change in your repository.
+        default to `latest`. A pinned version always applies the same rules, so
+        a rule added upstream never turns a green nightly build red without a
+        reviewed change in your repository. Rules with deadlines (for example
+        Google Play's target API and Billing Library deadlines) are judged
+        against the scan date, so a verdict can change when a deadline passes.
 
         Bump this value as an explicit, reviewable commit when you want new
-        rules. Check the changelog before upgrading — new rules can introduce
-        new findings, which is the point, but should land on your schedule.
+        rules. Before upgrading, run the new version once with `fail_on: none`
+        to see which findings it adds, so they land on your schedule.
       is_required: true
 
   - fail_on: "critical"
@@ -344,6 +379,11 @@ outputs:
     opts:
       title: "Analysis evaluation status"
       summary: "complete, incomplete, or unknown; independent of the severity gate."
+      description: |-
+        Whether the analysis covered everything it would need for a clean
+        result, independent of `fail_on`. Android analysis is currently always
+        `incomplete`, because the CLI reads only part of the project's files.
+        `unknown` on a tool error or an unreadable report.
 
   - APPFLIGHT_VERDICT:
     opts:
@@ -358,4 +398,4 @@ outputs:
         Absolute path to the written JSON report, normally
         `$BITRISE_DEPLOY_DIR/appflight-report.json`. The file is placed in the
         deploy directory so the Deploy to Bitrise.io step exports it as a build
-        artifact.
+        artifact. Empty when no report was produced (a tool error).
